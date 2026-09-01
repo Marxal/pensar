@@ -1,0 +1,27 @@
+{
+  "id": ".",
+  "name": "pensar",
+  "short_name": "pensar",
+  "description": "Boards, notes, and a quick-capture inbox, synced across your devices.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#faf6ef",
+  "theme_color": "#faf6ef",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "New note",
+      "short_name": "New note",
+      "description": "Capture a note straight into the Inbox. Long-press shortcuts aren't supported on iOS, so this only shows up on Android.",
+      "url": "./#/new",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

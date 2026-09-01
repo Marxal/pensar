@@ -51,8 +51,11 @@ const SWIPE_HINT_WIDTH = 96
 /**
  * Render the Inbox into `root`. Returns an unmount function — call it before
  * replacing `root`'s contents.
+ *
+ * `autoFocus` jumps the cursor straight into the quick-add field once
+ * loaded — used by the "New note" home-screen shortcut on Android.
  */
-export function mountInbox(root) {
+export function mountInbox(root, { autoFocus = false } = {}) {
   const state = {
     cards: [],
     boards: [],
@@ -62,6 +65,7 @@ export function mountInbox(root) {
   }
 
   let alive = true
+  let autoFocusPending = autoFocus
 
   // Swipe bookkeeping. `swipe` is a gesture in progress; `openRowId` is the
   // card whose archive/delete panel is currently snapped open.
@@ -199,6 +203,11 @@ export function mountInbox(root) {
       state.error = error?.message || 'Could not load your inbox.'
     }
     render()
+
+    if (autoFocusPending && state.status === 'ready') {
+      autoFocusPending = false
+      focusQuickAdd()
+    }
   }
 
   /** Run a mutation, then reload. Errors surface in the banner. */

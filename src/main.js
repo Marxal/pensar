@@ -73,6 +73,41 @@ function parseRoute() {
   return { name: 'inbox' }
 }
 
+/* ---------------------------------------------------------------
+   Install prompt
+   Chrome/Edge (desktop + Android) fire beforeinstallprompt and let us
+   trigger it from our own button. iOS has no such event — there, "install"
+   only ever happens via Safari's Share ▸ Add to Home Screen, which the
+   manifest + apple-touch-icon meta tags in index.html already support; no
+   JS-driven prompt is possible there, so the button just never appears.
+   --------------------------------------------------------------- */
+
+let deferredInstallPrompt = null
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault()
+  deferredInstallPrompt = event
+  document.querySelector('#install-app')?.removeAttribute('hidden')
+})
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null
+  document.querySelector('#install-app')?.setAttribute('hidden', '')
+})
+
+function mountInstallButton(button) {
+  if (!button) return
+  if (deferredInstallPrompt) button.removeAttribute('hidden')
+
+  button.addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return
+    deferredInstallPrompt.prompt()
+    await deferredInstallPrompt.userChoice
+    deferredInstallPrompt = null
+    button.setAttribute('hidden', '')
+  })
+}
+
 /** Highlight whichever topbar link owns the current route — boards, archived and a single board all belong to "Boards". */
 function paintNav(routeName) {
   const group = routeName === 'board' || routeName === 'archived' ? 'boards' : routeName
@@ -85,11 +120,19 @@ function mountRoute() {
   const view = document.querySelector('#view')
   if (!view) return
 
+  // The "New note" home-screen shortcut (Android only — see the install
+  // prompt comment above) lands here as #/new. Scrub it from the URL right
+  // away so a refresh or the back button doesn't replay it.
+  const isNewNoteShortcut = location.hash === '#/new'
+  if (isNewNoteShortcut) {
+    history.replaceState(null, '', location.pathname + location.search + '#/')
+  }
+
   const route = parseRoute()
   paintNav(route.name)
 
   const key = `${route.name}:${route.id ?? ''}`
-  if (key === currentRoute) return
+  if (key === currentRoute && !isNewNoteShortcut) return
   currentRoute = key
 
   if (unmountView) unmountView()
@@ -98,7 +141,7 @@ function mountRoute() {
     route.name === 'board'
       ? mountBoard(view, route.id)
       : route.name === 'inbox'
-        ? mountInbox(view)
+        ? mountInbox(view, { autoFocus: isNewNoteShortcut })
         : route.name === 'trash'
           ? mountTrash(view)
           : mountBoards(view, route.name === 'archived' ? 'archived' : 'active')
@@ -116,6 +159,7 @@ function renderApp() {
             <a class="topbar-link" data-route="trash" href="#/trash">Trash</a>
           </nav>
           <div class="topbar-actions">
+            <button class="text-btn" id="install-app" hidden>Install app</button>
             <button class="icon-btn" id="theme-toggle"></button>
             <span class="topbar-divider"></span>
             <button class="text-btn" id="logout">Log out</button>
@@ -128,6 +172,7 @@ function renderApp() {
   `
 
   mountThemeToggle(document.querySelector('#theme-toggle'))
+  mountInstallButton(document.querySelector('#install-app'))
 
   document.querySelector('#logout').addEventListener('click', async () => {
     await supabase.auth.signOut()
