@@ -4,6 +4,7 @@ import { initTheme, cycleTheme, paintThemeButton } from './theme'
 import { mountBoards } from './boardsView'
 import { mountBoard } from './boardView'
 import { mountInbox } from './inboxView'
+import { mountTrash } from './trashView'
 
 const app = document.querySelector('#app')
 
@@ -68,6 +69,7 @@ function parseRoute() {
   if (board) return { name: 'board', id: board[1] }
   if (location.hash === '#/archived') return { name: 'archived' }
   if (location.hash === '#/boards') return { name: 'boards' }
+  if (location.hash === '#/trash') return { name: 'trash' }
   return { name: 'inbox' }
 }
 
@@ -97,7 +99,9 @@ function mountRoute() {
       ? mountBoard(view, route.id)
       : route.name === 'inbox'
         ? mountInbox(view)
-        : mountBoards(view, route.name === 'archived' ? 'archived' : 'active')
+        : route.name === 'trash'
+          ? mountTrash(view)
+          : mountBoards(view, route.name === 'archived' ? 'archived' : 'active')
 }
 
 function renderApp() {
@@ -109,6 +113,7 @@ function renderApp() {
           <nav class="topbar-nav">
             <a class="topbar-link" data-route="inbox" href="#/">Inbox</a>
             <a class="topbar-link" data-route="boards" href="#/boards">Boards</a>
+            <a class="topbar-link" data-route="trash" href="#/trash">Trash</a>
           </nav>
           <div class="topbar-actions">
             <button class="icon-btn" id="theme-toggle"></button>

@@ -9,6 +9,7 @@ import {
   renameBoard,
   archiveBoard,
   restoreBoard,
+  trashBoard,
 } from './boards'
 import { countCardsByBoard } from './cards'
 import { openPrompt, openConfirm } from './dialogs'
@@ -58,6 +59,7 @@ export function mountBoards(root, view = 'active') {
         <div class="menu-list" hidden>
           <button type="button" data-action="rename" data-id="${id}">Rename</button>
           <button type="button" data-action="archive" data-id="${id}">Archive</button>
+          <button type="button" class="menu-danger" data-action="delete" data-id="${id}">Delete</button>
         </div>
       </div>
     `
@@ -87,6 +89,7 @@ export function mountBoards(root, view = 'active') {
           <p class="board-meta">Archived ${formatDate(board.archived_at)}</p>
         </div>
         <button class="btn btn-ghost btn-sm" data-action="restore" data-id="${board.id}">Restore</button>
+        <button class="btn btn-ghost btn-sm menu-danger" data-action="delete" data-id="${board.id}">Delete</button>
       </article>
     `
   }
@@ -271,6 +274,19 @@ export function mountBoards(root, view = 'active') {
     if (ok) await mutate(() => archiveBoard(id))
   }
 
+  async function onDelete(id) {
+    const board = boardById(id)
+    if (!board) return
+
+    const ok = await openConfirm({
+      title: `Delete “${board.name}”?`,
+      message: 'It moves to the trash rather than vanishing outright.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    })
+    if (ok) await mutate(() => trashBoard(id))
+  }
+
   /* ---------------------------------------------------------------
      Menus
      --------------------------------------------------------------- */
@@ -321,6 +337,9 @@ export function mountBoards(root, view = 'active') {
         break
       case 'archive':
         onArchive(id)
+        break
+      case 'delete':
+        onDelete(id)
         break
       case 'restore':
         mutate(() => restoreBoard(id))

@@ -4,7 +4,7 @@
 
 import { supabase } from './supabaseClient'
 
-const COLUMNS = 'id, name, position, archived_at, created_at'
+const COLUMNS = 'id, name, position, archived_at, deleted_at, created_at'
 
 /** Active boards, in display order. */
 export async function listBoards() {
@@ -12,6 +12,7 @@ export async function listBoards() {
     .from('pensar_boards')
     .select(COLUMNS)
     .is('archived_at', null)
+    .is('deleted_at', null)
     .order('position', { ascending: true })
     .order('created_at', { ascending: true })
 
@@ -19,7 +20,7 @@ export async function listBoards() {
   return data ?? []
 }
 
-/** One board by id, archived or not. Null when it doesn't exist. */
+/** One board by id, in any state. Null when it doesn't exist. */
 export async function getBoard(id) {
   const { data, error } = await supabase
     .from('pensar_boards')
@@ -31,12 +32,13 @@ export async function getBoard(id) {
   return data
 }
 
-/** Archived boards, most recently archived first. */
+/** Archived, non-trashed boards, most recently archived first. */
 export async function listArchivedBoards() {
   const { data, error } = await supabase
     .from('pensar_boards')
     .select(COLUMNS)
     .not('archived_at', 'is', null)
+    .is('deleted_at', null)
     .order('archived_at', { ascending: false })
 
   if (error) throw error
@@ -48,16 +50,40 @@ export async function countArchivedBoards() {
     .from('pensar_boards')
     .select('id', { count: 'exact', head: true })
     .not('archived_at', 'is', null)
+    .is('deleted_at', null)
 
   if (error) throw error
   return count ?? 0
 }
 
-/** Highest position in use, across active and archived. -1 when there are none. */
+/** Trashed boards, most recently deleted first. */
+export async function listTrashedBoards() {
+  const { data, error } = await supabase
+    .from('pensar_boards')
+    .select(COLUMNS)
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false })
+
+  if (error) throw error
+  return data ?? []
+}
+
+export async function countTrashedBoards() {
+  const { count, error } = await supabase
+    .from('pensar_boards')
+    .select('id', { count: 'exact', head: true })
+    .not('deleted_at', 'is', null)
+
+  if (error) throw error
+  return count ?? 0
+}
+
+/** Highest position in use, across active and archived (not trashed). -1 when there are none. */
 async function lastPosition() {
   const { data, error } = await supabase
     .from('pensar_boards')
     .select('position')
+    .is('deleted_at', null)
     .order('position', { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -108,6 +134,31 @@ export async function restoreBoard(id) {
     .from('pensar_boards')
     .update({ archived_at: null, position })
     .eq('id', id)
+
+  if (error) throw error
+}
+
+/** Soft delete — the row stays put until the trash's scheduled purge. */
+export async function trashBoard(id) {
+  const { error } = await supabase
+    .from('pensar_boards')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw error
+}
+
+/** Restore out of the trash, back to wherever it was — active or archived. */
+export async function restoreTrashedBoard(id) {
+  const board = await getBoard(id)
+  if (!board) return
+
+  const updates = { deleted_at: null }
+  // Only a board headed back to the active list needs a fresh spot at the
+  // end; an archived board's position doesn't matter until it's restored.
+  if (!board.archived_at) updates.position = (await lastPosition()) + 1
+
+  const { error } = await supabase.from('pensar_boards').update(updates).eq('id', id)
 
   if (error) throw error
 }

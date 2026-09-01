@@ -140,12 +140,42 @@ export async function setCardCover(id, coverImagePath) {
   return data
 }
 
-/** Soft delete — the row stays put until trash gets built out. */
+/** Soft delete — the row stays put until the trash's scheduled purge. */
 export async function trashCard(id) {
   const { error } = await supabase
     .from('pensar_cards')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
+
+  if (error) throw error
+}
+
+/** Trashed cards, most recently deleted first, with the board they belonged
+ *  to (null when it was an Inbox card). */
+export async function listTrashedCards() {
+  const { data, error } = await supabase
+    .from('pensar_cards')
+    .select(`${COLUMNS}, deleted_at, board:pensar_boards(name)`)
+    .not('deleted_at', 'is', null)
+    .order('deleted_at', { ascending: false })
+
+  if (error) throw error
+  return data ?? []
+}
+
+export async function countTrashedCards() {
+  const { count, error } = await supabase
+    .from('pensar_cards')
+    .select('id', { count: 'exact', head: true })
+    .not('deleted_at', 'is', null)
+
+  if (error) throw error
+  return count ?? 0
+}
+
+/** Restore a trashed card back to wherever it was — the Inbox or its board. */
+export async function restoreCard(id) {
+  const { error } = await supabase.from('pensar_cards').update({ deleted_at: null }).eq('id', id)
 
   if (error) throw error
 }
