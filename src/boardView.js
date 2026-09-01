@@ -20,6 +20,7 @@ import {
 import { openCardEditor, openConfirm } from './dialogs'
 import { escapeHtml, plural, dueInfo } from './format'
 import { plainText, firstImageUrl } from './markdown'
+import { signCoverImages } from './images'
 
 const ICONS = {
   back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg>`,
@@ -27,6 +28,8 @@ const ICONS = {
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
   grip: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="6" r="1.3"/><circle cx="15" cy="6" r="1.3"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/><circle cx="9" cy="18" r="1.3"/><circle cx="15" cy="18" r="1.3"/></svg>`,
   note: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5zM8.5 9h7M8.5 12.5h7M8.5 16h4"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V6.75A1.75 1.75 0 0 0 13.75 5H6.75A1.75 1.75 0 0 0 5 6.75v7A1.75 1.75 0 0 0 6.75 15.5H8.5"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
 }
 
 /** Pixels of movement before a press turns into a drag. */
@@ -52,6 +55,7 @@ export function mountBoard(root, boardId) {
   const state = {
     board: null,
     cards: [],
+    coverLinks: new Map(), // cover_image_url (storage path) → signed URL
     status: 'loading', // loading | ready | error | missing
     error: '',
     busy: false, // an action is in flight; blocks double-taps
@@ -125,7 +129,8 @@ export function mountBoard(root, boardId) {
     // A titleless card already spends its note text on the heading — showing
     // it again underneath would just repeat the same words.
     const body = hasTitle ? excerpt(bodyText) : ''
-    const thumb = firstImageUrl(card.body_markdown)
+    // The cover image wins over a link preview picked up from the note body.
+    const thumb = state.coverLinks.get(card.cover_image_url) ?? firstImageUrl(card.body_markdown)
 
     return `
       <article class="card" data-card="${card.id}" data-action="edit" data-id="${card.id}">
@@ -138,6 +143,13 @@ export function mountBoard(root, boardId) {
           </div>
           ${thumb ? `<img class="card-thumb" src="${escapeHtml(thumb)}" alt="" loading="lazy">` : ''}
         </div>
+        <button
+          class="icon-btn icon-btn-sm card-copy"
+          data-action="copy"
+          data-id="${card.id}"
+          aria-label="Copy card text"
+          title="Copy card text"
+        >${ICONS.copy}</button>
         ${cardMenu(card)}
       </article>
     `
@@ -261,11 +273,22 @@ export function mountBoard(root, boardId) {
       state.board = board
       state.cards = cards
       state.status = 'ready'
+      signCovers()
     } catch (error) {
       if (!alive) return
       state.status = 'error'
       state.error = error?.message || 'Could not load this board.'
     }
+    render()
+  }
+
+  /** Sign every card's cover in one call, then re-render once the links land
+   *  — the board itself doesn't wait on this, same as niu's avatar links. */
+  async function signCovers() {
+    const paths = state.cards.map((card) => card.cover_image_url).filter(Boolean)
+    const links = await signCoverImages(paths)
+    if (!alive) return
+    state.coverLinks = links
     render()
   }
 
@@ -305,7 +328,13 @@ export function mountBoard(root, boardId) {
     const card = cardById(id)
     if (!card) return
 
-    const fields = await openCardEditor({ card, columnLabel: STATUS_LABELS[card.status] })
+    const fields = await openCardEditor({
+      card,
+      columnLabel: STATUS_LABELS[card.status],
+      // The cover saves itself immediately, independent of Save/Cancel below
+      // — reload so the tile's thumbnail picks it up even on a cancel.
+      onCoverChange: load,
+    })
     if (fields) await mutate(() => updateCard(id, fields))
   }
 
@@ -320,6 +349,32 @@ export function mountBoard(root, boardId) {
       destructive: true,
     })
     if (ok) await mutate(() => trashCard(id))
+  }
+
+  /** Copy a card's title and note as plain text. Flashes the button's icon
+   *  to a checkmark as the only feedback — no clipboard permission means no
+   *  visible change, which is fine since there's nothing to recover from. */
+  async function onCopy(id, button) {
+    const card = cardById(id)
+    if (!card) return
+
+    const text = [card.title.trim(), plainText(card.body_markdown)].filter(Boolean).join('\n\n')
+    if (!text) return
+
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      return
+    }
+    if (!alive || !button.isConnected) return
+
+    button.classList.add('is-copied')
+    button.innerHTML = ICONS.check
+    setTimeout(() => {
+      if (!button.isConnected) return
+      button.classList.remove('is-copied')
+      button.innerHTML = ICONS.copy
+    }, 1200)
   }
 
   /* ---------------------------------------------------------------
@@ -410,6 +465,12 @@ export function mountBoard(root, boardId) {
   function startDrag() {
     const element = pending.element
     const rect = element.getBoundingClientRect()
+
+    // Capture on `root`, not the card: `placeDragged` reparents the card on
+    // every move to reorder it, and Safari silently drops pointer capture
+    // held by a node the instant that node is moved in the DOM — which was
+    // freezing the drag after the very first move.
+    root.setPointerCapture(activePointerId)
 
     const ghost = element.cloneNode(true)
     ghost.classList.add('card-ghost')
@@ -508,11 +569,9 @@ export function mountBoard(root, boardId) {
 
     pending = { element, x: event.clientX, y: event.clientY }
     activePointerId = event.pointerId
-    // Capture on `root`, not the card: `placeDragged` reparents the card on
-    // every move to reorder it, and Safari silently drops pointer capture
-    // held by a node the instant that node is moved in the DOM — which was
-    // freezing the drag after the very first move.
-    root.setPointerCapture(event.pointerId)
+    // Capture is grabbed once a drag actually starts (see `startDrag`), not
+    // here — capturing on every press retargets the plain-tap `click` that
+    // follows to whatever holds capture, which broke opening a card.
     root.addEventListener('pointermove', onPointerMove)
     root.addEventListener('pointerup', onPointerUp)
     root.addEventListener('pointercancel', onPointerCancel)
@@ -574,6 +633,9 @@ export function mountBoard(root, boardId) {
         break
       case 'delete':
         onDelete(id)
+        break
+      case 'copy':
+        onCopy(id, target)
         break
       case 'move':
         mutate(() => moveCard(id, boardId, status))

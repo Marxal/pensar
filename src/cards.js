@@ -125,6 +125,21 @@ export async function updateCard(id, fields) {
   return data
 }
 
+/** Set or clear a card's cover image. Separate from `updateCard` because the
+ *  cover saves the moment it's picked, rather than waiting on the editor's
+ *  Save button — same as niu's avatar picker. */
+export async function setCardCover(id, coverImagePath) {
+  const { data, error } = await supabase
+    .from('pensar_cards')
+    .update({ cover_image_url: coverImagePath })
+    .eq('id', id)
+    .select(COLUMNS)
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 /** Soft delete — the row stays put until trash gets built out. */
 export async function trashCard(id) {
   const { error } = await supabase

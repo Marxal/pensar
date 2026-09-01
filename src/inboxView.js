@@ -33,6 +33,8 @@ const ICONS = {
   board: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="4.5" height="16" rx="1.2"/><rect x="9.75" y="4" width="4.5" height="11" rx="1.2"/><rect x="16.5" y="4" width="4.5" height="7" rx="1.2"/></svg>`,
   archive: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="4" rx="1.2"/><path d="M4.75 8.5v9.25a1.75 1.75 0 0 0 1.75 1.75h11a1.75 1.75 0 0 0 1.75-1.75V8.5M10 12.5h4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V6.75A1.75 1.75 0 0 0 13.75 5H6.75A1.75 1.75 0 0 0 5 6.75v7A1.75 1.75 0 0 0 6.75 15.5H8.5"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
 }
 
 /** Pixels of movement before a press turns into a swipe. */
@@ -86,6 +88,14 @@ export function mountInbox(root) {
           <button type="button" class="inbox-card-main" data-action="edit" data-id="${card.id}">
             <span class="inbox-card-title">${escapeHtml(cardHeading(card))}</span>
           </button>
+          <button
+            type="button"
+            class="icon-btn icon-btn-sm inbox-card-copy"
+            data-action="copy"
+            data-id="${card.id}"
+            aria-label="Copy card text"
+            title="Copy card text"
+          >${ICONS.copy}</button>
           <div class="menu">
             <button
               class="icon-btn icon-btn-sm menu-trigger"
@@ -275,6 +285,32 @@ export function mountInbox(root) {
     if (ok) await mutate(() => trashCard(id))
   }
 
+  /** Copy a card's title and note as plain text. Flashes the button's icon
+   *  to a checkmark as the only feedback — no clipboard permission means no
+   *  visible change, which is fine since there's nothing to recover from. */
+  async function onCopy(id, button) {
+    const card = cardById(id)
+    if (!card) return
+
+    const text = [card.title.trim(), plainText(card.body_markdown)].filter(Boolean).join('\n\n')
+    if (!text) return
+
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      return
+    }
+    if (!alive || !button.isConnected) return
+
+    button.classList.add('is-copied')
+    button.innerHTML = ICONS.check
+    setTimeout(() => {
+      if (!button.isConnected) return
+      button.classList.remove('is-copied')
+      button.innerHTML = ICONS.copy
+    }, 1200)
+  }
+
   /* ---------------------------------------------------------------
      Menus
      --------------------------------------------------------------- */
@@ -433,6 +469,9 @@ export function mountInbox(root) {
         break
       case 'assign':
         onAssign(id)
+        break
+      case 'copy':
+        onCopy(id, target)
         break
       case 'archive':
         mutate(() => archiveCard(id))

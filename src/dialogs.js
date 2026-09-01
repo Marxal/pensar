@@ -2,9 +2,10 @@
 // Plain divs rather than <dialog> so older iOS Safari is covered too.
 
 import { escapeHtml } from './format'
-import { PRIORITY_LABELS, STATUSES, STATUS_LABELS } from './cards'
+import { PRIORITY_LABELS, STATUSES, STATUS_LABELS, setCardCover } from './cards'
 import { renderMarkdown, markdownFromHtml } from './markdown'
 import { fetchLinkPreview } from './linkPreview'
+import { uploadCoverImage, removeCoverImage, signCoverImages, looksLikeImage, MAX_INPUT_BYTES } from './images'
 
 /**
  * Mount a modal and resolve with whatever `finish` is called with.
@@ -297,6 +298,142 @@ function cleanedEditorHtml(editor) {
 }
 
 /**
+ * Wire the cover-image drop zone: click-to-browse, drag-and-drop, paste
+ * anywhere in the modal, and a remove button. A no-op when the modal has no
+ * `[data-cover-drop]` — new cards don't get one; see `openCardEditor`.
+ *
+ * The `paste` listener sits on the modal rather than the drop zone because a
+ * paste has no drop location — and it only ever intercepts an image. A text
+ * paste still falls through untouched, including into the note editor.
+ */
+function wireCoverImage(modal, card, onCoverChange) {
+  const drop = modal.querySelector('[data-cover-drop]')
+  if (!drop) return
+
+  const input = modal.querySelector('[data-cover-input]')
+  const preview = modal.querySelector('[data-cover-preview]')
+  const hint = modal.querySelector('[data-cover-hint]')
+  const remove = modal.querySelector('[data-cover-remove]')
+  const status = modal.querySelector('[data-cover-status]')
+
+  let path = card.cover_image_url ?? null
+  let busy = false
+
+  function setStatus(text) {
+    status.hidden = !text
+    status.textContent = text ?? ''
+  }
+
+  function showCover(url) {
+    preview.src = url
+    preview.hidden = false
+    hint.hidden = true
+    remove.hidden = false
+  }
+
+  function showEmpty() {
+    preview.hidden = true
+    preview.removeAttribute('src')
+    hint.hidden = false
+    remove.hidden = true
+  }
+
+  // Hydrate an existing cover — signing is async, so it starts blank and
+  // fills in once the link comes back.
+  if (path) {
+    signCoverImages([path]).then((links) => {
+      const url = links.get(path)
+      if (url) showCover(url)
+    })
+  }
+
+  async function handleFile(file) {
+    if (busy) return
+    if (!looksLikeImage(file.type)) {
+      setStatus("That doesn't look like an image.")
+      return
+    }
+    if (file.size > MAX_INPUT_BYTES) {
+      setStatus('That image is too large.')
+      return
+    }
+
+    busy = true
+    setStatus('Uploading…')
+    try {
+      const uploaded = await uploadCoverImage(card.id, file)
+      await setCardCover(card.id, uploaded)
+      path = uploaded
+      const links = await signCoverImages([path])
+      const url = links.get(path)
+      setStatus(null)
+      if (url) showCover(url)
+      onCoverChange?.()
+    } catch (error) {
+      setStatus(error?.message || 'That upload did not go through.')
+    }
+    busy = false
+  }
+
+  drop.addEventListener('click', () => input.click())
+  drop.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      input.click()
+    }
+  })
+
+  input.addEventListener('change', () => {
+    const file = input.files[0]
+    input.value = ''
+    if (file) handleFile(file)
+  })
+
+  drop.addEventListener('dragover', (event) => {
+    event.preventDefault()
+    drop.classList.add('is-dragover')
+  })
+  drop.addEventListener('dragleave', () => drop.classList.remove('is-dragover'))
+  drop.addEventListener('drop', (event) => {
+    event.preventDefault()
+    drop.classList.remove('is-dragover')
+    const file = event.dataTransfer.files[0]
+    if (file) handleFile(file)
+  })
+
+  // A drop anywhere else in the modal would otherwise fall through to the
+  // browser's default — opening the file — and navigate away from the app.
+  modal.addEventListener('dragover', (event) => event.preventDefault())
+  modal.addEventListener('drop', (event) => event.preventDefault())
+
+  remove.addEventListener('click', async (event) => {
+    event.stopPropagation() // the remove button sits inside the drop zone's own click target
+    if (busy) return
+    busy = true
+
+    const removedPath = path
+    path = null
+    showEmpty()
+    setStatus(null)
+    try {
+      await setCardCover(card.id, null)
+      await removeCoverImage(removedPath)
+      onCoverChange?.()
+    } catch (error) {
+      setStatus(error?.message || 'That did not go through.')
+    }
+    busy = false
+  })
+
+  modal.addEventListener('paste', (event) => {
+    const file = [...(event.clipboardData?.files ?? [])].find((f) => looksLikeImage(f.type))
+    if (!file) return
+    event.preventDefault()
+    handleFile(file)
+  })
+}
+
+/**
  * Card editor: title, note, due date, priority. The note editor is
  * WYSIWYG — it shows formatted text directly, no markdown source or
  * preview toggle. Pasting a link fetches and shows its preview image.
@@ -304,8 +441,14 @@ function cleanedEditorHtml(editor) {
  * Resolves with `{ title, body_markdown, due_date, priority }`, or null if
  * dismissed. Pass `card` to edit an existing one. Title is optional — a
  * note just needs *something*, in the title or the body.
+ *
+ * The cover image (existing cards only — a new one has no id to upload
+ * against yet) saves itself the moment it's picked, independent of the
+ * form's Save button, same as niu's avatar picker. `onCoverChange` fires
+ * right after each successful upload/remove so the board underneath — which
+ * lives outside this modal in the DOM — can refresh its thumbnail live.
  */
-export function openCardEditor({ card = null, columnLabel = '' } = {}) {
+export function openCardEditor({ card = null, columnLabel = '', onCoverChange } = {}) {
   const editing = Boolean(card)
 
   const priorityOptions = ['', ...Object.keys(PRIORITY_LABELS)]
@@ -334,6 +477,23 @@ export function openCardEditor({ card = null, columnLabel = '' } = {}) {
             value="${escapeHtml(card?.title ?? '')}"
           />
         </label>
+
+        ${
+          editing
+            ? `
+          <div class="field">
+            <span class="field-label">Cover image</span>
+            <div class="cover-drop" data-cover-drop tabindex="0" role="button" aria-label="Add a cover image">
+              <img class="cover-preview" data-cover-preview alt="" hidden>
+              <p class="cover-hint" data-cover-hint>Drag an image here, paste, or click to choose one</p>
+              <button type="button" class="cover-remove" data-cover-remove aria-label="Remove cover image" title="Remove cover image" hidden>×</button>
+              <p class="cover-status" data-cover-status hidden></p>
+            </div>
+            <input type="file" accept="image/*" class="cover-input" data-cover-input hidden>
+          </div>
+        `
+            : ''
+        }
 
         <div class="field">
           <span class="field-label">Note</span>
@@ -375,6 +535,8 @@ export function openCardEditor({ card = null, columnLabel = '' } = {}) {
       const title = form.elements.title
       const editor = modal.querySelector('.editor-body')
       const toolbar = modal.querySelector('.editor-toolbar')
+
+      wireCoverImage(modal, card, onCoverChange)
 
       function syncEmptyState() {
         editor.classList.toggle('is-empty', !editor.textContent.trim())
