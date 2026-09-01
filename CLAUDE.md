@@ -13,6 +13,8 @@ A personal task & note app: kanban boards, a quick-capture inbox, markdown notes
 
 Two tables in the shared niu Supabase project, prefixed `pensar_` to stay clear of niu's own tables: `pensar_boards` and `pensar_cards`. Every row carries `user_id` and is scoped by RLS to `auth.uid()`. `pensar_cards.board_id` is nullable — null means the card is sitting in the Inbox. `status` (`todo`/`doing`/`done`) only matters once a card has a board. See `pensar-build-plan.md` for the full column list.
 
+**Schema changes are migration files via the Supabase CLI — never the SQL editor.** A new file in `supabase/migrations/`, then `supabase db push` from a real terminal (has to be Marçal — Claude Code's sandboxed shell can't reach the CLI's login session, and the DB password shouldn't pass through it anyway). Because this Supabase project is shared with `niu` (same project ref), the migration-history table lives once in that shared database — so **every migration file, from either app, must exist in both repos' `supabase/migrations/` folders**, or `db push` / `migration list` will error about remote versions missing locally. Claude mirrors the file into the niu repo automatically.
+
 ## Working style
 
 - One layer at a time — build a phase, hand it back for a phone/desktop test, then move on
