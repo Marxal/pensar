@@ -368,6 +368,7 @@ button {
   cursor: pointer;
   padding: 0.4rem 0.65rem;
   border-radius: var(--radius-md);
+  white-space: nowrap;
   transition: color 0.15s ease, background-color 0.15s ease;
 }
 
@@ -1602,6 +1603,12 @@ select.field-input {
   .kanban {
     grid-template-columns: 1fr;
   }
+
+  /* No room for a third text button in the topbar here — Android still
+     offers Add to Home screen from Chrome's own menu at this width. */
+  #install-app {
+    display: none;
+  }
 }
 
 @media (max-width: 40rem) {
@@ -1627,21 +1634,40 @@ select.field-input {
 }
 
 /* The topbar's brand + nav + actions get tight before the rest of the layout does. */
-@media (max-width: 26rem) {
+@media (max-width: 30rem) {
   .topbar-inner {
-    gap: 0.4rem;
+    gap: 0.25rem;
   }
 
   .topbar-link {
-    padding: 0.4rem 0.5rem;
-    font-size: 0.8rem;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.75rem;
   }
 
   .topbar-divider {
-    margin: 0 0.2rem;
+    margin: 0 0.15rem;
   }
 
   .text-btn {
-    padding: 0.4rem 0.5rem;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.8rem;
+  }
+}
+
+/* Very small phones (e.g. a 320px-wide screen) need the brand and nav
+   trimmed too, not just the actions on the right. */
+@media (max-width: 21rem) {
+  .app-topbar {
+    padding-left: max(0.65rem, env(safe-area-inset-left));
+    padding-right: max(0.65rem, env(safe-area-inset-right));
+  }
+
+  .brand {
+    font-size: 1.05rem;
+  }
+
+  .topbar-link {
+    padding: 0.3rem 0.3rem;
+    font-size: 0.7rem;
   }
 }

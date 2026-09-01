@@ -69,7 +69,14 @@ export function mountBoards(root, view = 'active') {
     const count = state.counts.get(board.id) ?? 0
 
     return `
-      <article class="board-tile board-tile-open" data-action="open" data-id="${board.id}">
+      <article
+        class="board-tile board-tile-open"
+        data-action="open"
+        data-id="${board.id}"
+        tabindex="0"
+        role="button"
+        aria-label="Open ${escapeHtml(board.name)}"
+      >
         <span class="board-glyph" aria-hidden="true">${ICONS.board}</span>
         <div class="board-tile-text">
           <h3 class="board-name">${escapeHtml(board.name)}</h3>
@@ -357,7 +364,18 @@ export function mountBoards(root, view = 'active') {
   }
 
   function onKeydown(event) {
-    if (event.key === 'Escape') closeMenus()
+    if (event.key === 'Escape') {
+      closeMenus()
+      return
+    }
+
+    // The tile itself carries the "open" action — Enter/Space activates it
+    // like a native button. Nested buttons (menu, rename, ...) already get
+    // this for free, so only handle it when the tile itself is focused.
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('.board-tile-open')) {
+      event.preventDefault()
+      event.target.click()
+    }
   }
 
   document.addEventListener('click', onClick)

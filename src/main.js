@@ -159,7 +159,7 @@ function renderApp() {
             <a class="topbar-link" data-route="trash" href="#/trash">Trash</a>
           </nav>
           <div class="topbar-actions">
-            <button class="text-btn" id="install-app" hidden>Install app</button>
+            <button class="text-btn" id="install-app" hidden>Install</button>
             <button class="icon-btn" id="theme-toggle"></button>
             <span class="topbar-divider"></span>
             <button class="text-btn" id="logout">Log out</button>
