@@ -12,10 +12,16 @@ dist
 dist-ssr
 *.local
 
-# Env files (local secrets)
-.env
-.env.*
-!.env.example
+# Note: `.env` is deliberately NOT ignored — same as niu. It holds the Supabase
+# project URL and the publishable key, both of which are compiled into the
+# public bundle anyway and are meant to be public; Row Level Security is what
+# actually protects the data. Keeping it in the repo means the GitHub Pages
+# build gets it with no extra setup (no repo secrets to configure).
+#
+# `.env.local` overrides it and IS ignored, for pointing at a different
+# Supabase project locally without touching the committed one.
+.env.local
+.env.*.local
 
 # Supabase CLI local link state (machine-specific)
 supabase/.temp
