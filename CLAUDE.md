@@ -9,6 +9,18 @@ A personal task & note app: projects with user-made drawers, quick-capture notes
 - Deployed as a static site to GitHub Pages via GitHub Actions
 - PWA: installable on desktop and phone (manifest + icons), no offline mode — always-online is fine
 
+**Testing Google sign-in on a phone over LAN needs a hostname, never the raw
+LAN IP.** Supabase's Auth server hard-rejects any redirect whose host parses
+as an IP address (confirmed from its own source — only `127.0.0.1` passes),
+regardless of what's in the dashboard's allow-list — so `http://192.168.x.x:…`
+can never work there, no matter how it's wildcarded. Use this Mac's Bonjour/
+mDNS hostname instead (`scutil --get LocalHostName`, e.g.
+`http://iMac-de-Marcal.local:5173/pensar/`); `vite.config.js`'s
+`server.allowedHosts: ['.local']` lets Vite accept that hostname, and the
+shared Supabase project needs `http://iMac-de-Marcal.local:*/**` on its
+Redirect URLs list. Full detail lives in niu's `CLAUDE.md` (rule 8) since it's
+the same Supabase project either app can add the entry from.
+
 ## Data
 
 Three tables in the shared niu Supabase project, prefixed `pensar_` to stay clear of niu's own tables: `pensar_boards`, `pensar_drawers` and `pensar_cards`. Every row carries `user_id` and is scoped by RLS to `auth.uid()`. See `pensar-build-plan.md` for the full column list.
