@@ -44,7 +44,7 @@ A card's placement is its `drawer_id` and nothing else — null means it's a qui
 Decisions that are easy to undo by accident, so they're written down:
 
 - **A title is for long notes only.** A line typed into quick capture or into a tick list becomes the card's *note*, not its title — the heading falls back to the note when there's no title, so a title as well would be the same words twice.
-- **Drawers** are reordered by dragging their header (the menu still offers Move earlier / later, for the keyboard), renamed by clicking the name in place, and **deleting one takes its cards to the trash with it**. They used to be tipped out into Quick notes; that surprised every time.
+- **Drawers** have no dots menu. Their shape is three icons at the top right of the header — tap one to switch, no dialog; reordering is a drag of the header, same as a card; and dragging one onto the delete zone that appears along the top **takes its cards to the trash with it** (an undo follows, the same as any other gesture). Renaming is still a click on the name in place. Drawers used to tip their cards out into Quick notes when deleted; that surprised every time, so deleting one now means what it says.
 - **A note folds itself out** unless it's long, carries more than one picture, or sits in a crowded drawer — `cardStartsOpen` in `cardTile.js`. Whatever the user folds by hand is remembered per device and wins (`openCards.js`).
 - **A picture appears once.** The face carries a thumbnail only while the card is folded away; the note underneath shows it at full width when it isn't.
 - **A gallery is masonry** — CSS columns, pictures uncropped, and a note with no picture becomes a block of text among them. Pictures dropped onto any drawer from outside the browser become cards.

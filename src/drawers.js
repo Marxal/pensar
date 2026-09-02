@@ -111,19 +111,6 @@ export async function deleteDrawer(id) {
   if (error) throw error
 }
 
-/** Swap a drawer with its neighbour. `direction` is -1 (left) or 1 (right). */
-export async function moveDrawer(drawers, id, direction) {
-  const ordered = [...drawers].sort((a, b) => a.position - b.position)
-  const index = ordered.findIndex((drawer) => drawer.id === id)
-  const swapWith = index + direction
-  if (index < 0 || swapWith < 0 || swapWith >= ordered.length) return
-
-  const reordered = [...ordered]
-  ;[reordered[index], reordered[swapWith]] = [reordered[swapWith], reordered[index]]
-
-  await saveDrawerOrder(reordered.map((drawer) => drawer.id))
-}
-
 /**
  * Write a whole board's drawer order down, `ids` being them left to right.
  *

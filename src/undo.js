@@ -36,6 +36,10 @@ export function offerUndo({ message, undo, duration = OFFER_MS }) {
 
   toast = document.createElement('div')
   toast.className = 'undo-toast'
+  // A board with more than one project sits above a bottom nav bar of its own
+  // (see boardView.js's project bar) — without this the toast lands right
+  // behind it, out of the way of every tap.
+  if (document.querySelector('.project-bar')) toast.classList.add('is-above-nav')
   toast.setAttribute('role', 'status')
   toast.innerHTML = `<span class="undo-text"></span><button type="button" class="undo-btn">Undo</button>`
   toast.querySelector('.undo-text').textContent = message

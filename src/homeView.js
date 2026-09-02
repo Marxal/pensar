@@ -42,6 +42,7 @@ import { openLightbox } from './lightbox'
 import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
+import { slideInto } from './flip'
 import { signImages } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
@@ -643,7 +644,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (!bar || bar.hidden) return null
 
     const rect = bar.getBoundingClientRect()
-    if (y < rect.top) return null
+    if (y < rect.top || y > rect.bottom) return null
 
     for (const element of bar.querySelectorAll('[data-zone]')) {
       const box = element.getBoundingClientRect()
@@ -786,8 +787,19 @@ export function mountHome(root, { autoFocus = false } = {}) {
     }
     if (before && !before.classList?.contains('board-tile')) before = undefined
 
-    if (before) grid.insertBefore(element, before)
-    else grid.append(element)
+    // Same gap as last time means nothing to do — otherwise the tiles would
+    // restart their slide on every pointer move.
+    const settled = before ? element.nextElementSibling === before : grid.lastElementChild === element
+    if (settled) return
+
+    slideInto(
+      siblings,
+      () => {
+        if (before) grid.insertBefore(element, before)
+        else grid.append(element)
+      },
+      { skip: element }
+    )
   }
 
   /** Read the grid back out of the DOM and persist whatever shifted. */

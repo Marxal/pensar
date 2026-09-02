@@ -24,8 +24,9 @@ import {
   createDrawer,
   updateDrawer,
   deleteDrawer,
-  moveDrawer,
   saveDrawerOrder,
+  DRAWER_KINDS,
+  DRAWER_KIND_LABELS,
   FIRST_DRAWER,
 } from './drawers'
 import {
@@ -48,6 +49,7 @@ import { openLightbox } from './lightbox'
 import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { boardColour, renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
+import { slideInto } from './flip'
 import { signImages, looksLikeImage, uploadNoteImage } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
@@ -64,6 +66,13 @@ const ICONS = {
   expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h5v5M20 4l-6.5 6.5M9 20H4v-5M4 20l6.5-6.5"/></svg>`,
   collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 9h-5V4M14.5 9.5 20 4M4 15h5v5M9.5 14.5 4 20"/></svg>`,
   picture: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
+}
+
+/** One small glyph per drawer shape, for the buttons that switch it. */
+const KIND_ICONS = {
+  list: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="3" height="3" rx="0.7"/><path d="M10.5 7h9"/><rect x="4" y="10.5" width="3" height="3" rx="0.7"/><path d="M10.5 12h9"/><rect x="4" y="15.5" width="3" height="3" rx="0.7"/><path d="M10.5 17h9"/></svg>`,
+  notes: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h8l3 3v14h-11z"/><path d="M14.5 3.5v3h3"/><path d="M9 12h6M9 15.5h6"/></svg>`,
+  gallery: ICONS.picture,
 }
 
 /** How long a card has to be held over another before the two would merge. */
@@ -198,7 +207,7 @@ export function mountBoard(root, boardId) {
     `
   }
 
-  function drawerSection(drawer, index) {
+  function drawerSection(drawer) {
     const cards = cardsIn(drawer.id)
     const crowded = cards.length > CROWDED_AT
     const focused = state.focus === drawer.id
@@ -237,31 +246,29 @@ export function mountBoard(root, boardId) {
       `
     }
 
+    const shapeControls = DRAWER_KINDS.map(
+      (kind) => `
+        <button
+          type="button"
+          class="icon-btn icon-btn-sm"
+          data-act="drawer-kind"
+          data-drawer="${drawer.id}"
+          data-kind="${kind}"
+          data-no-drag
+          aria-pressed="${String(drawer.kind === kind)}"
+          aria-label="${DRAWER_KIND_LABELS[kind]}"
+          title="${DRAWER_KIND_LABELS[kind]}"
+        >${KIND_ICONS[kind]}</button>
+      `
+    ).join('')
+
     return `
       <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}">
         <header class="drawer-head"${state.focus ? '' : ' data-drawer-handle'}>
           ${drawerTitle(drawer)}
           <span class="drawer-count">${cards.length}</span>
           ${expandControl}
-          <div class="menu">
-            <button
-              type="button"
-              class="icon-btn icon-btn-sm menu-trigger"
-              data-act="menu"
-              aria-haspopup="true"
-              aria-expanded="false"
-              aria-label="Drawer actions"
-              title="Drawer actions"
-            >${ICONS.more}</button>
-            <div class="menu-list" hidden>
-              <button type="button" data-act="drawer-edit" data-drawer="${drawer.id}">Rename &amp; reshape…</button>
-              <button type="button" data-act="drawer-left" data-drawer="${drawer.id}"${index === 0 ? ' disabled' : ''}>Move earlier</button>
-              <button type="button" data-act="drawer-right" data-drawer="${drawer.id}"${
-                index === state.drawers.length - 1 ? ' disabled' : ''
-              }>Move later</button>
-              <button type="button" class="menu-danger" data-act="drawer-delete" data-drawer="${drawer.id}">Delete drawer</button>
-            </div>
-          </div>
+          <div class="drawer-shapes">${shapeControls}</div>
         </header>
 
         <div class="drawer-cards" data-cards>
@@ -446,7 +453,7 @@ export function mountBoard(root, boardId) {
 
       body = `
         <div class="drawers${state.focus ? ' is-focused' : ''}" data-lane>
-          ${shown.map((drawer) => drawerSection(drawer, state.drawers.indexOf(drawer))).join('')}
+          ${shown.map((drawer) => drawerSection(drawer)).join('')}
         </div>
       `
     }
@@ -735,30 +742,23 @@ export function mountBoard(root, boardId) {
     if (fields) await mutate(() => createDrawer(boardId, fields))
   }
 
-  async function onEditDrawer(id) {
+  /** A shape is a tap on one of the drawer's own icons — no dialog, since
+   *  nothing about the cards inside it changes when the drawer does. */
+  async function onSetDrawerKind(id, kind) {
     const drawer = drawerById(id)
-    if (!drawer) return
-
-    const fields = await openDrawerDialog({ drawer })
-    if (fields) await mutate(() => updateDrawer(id, fields))
+    if (!drawer || drawer.kind === kind) return
+    await mutate(() => updateDrawer(id, { kind }))
   }
 
-  /** Deleting a drawer takes its cards with it — see drawers.js. The undo
-   *  builds the drawer again and lifts every card back out of the trash. */
-  async function onDeleteDrawer(id) {
+  /** Deleting a drawer takes its cards with it — see drawers.js. Dropped on
+   *  the delete bar rather than confirmed first, the same as everything else
+   *  a gesture does — the undo builds the drawer again and lifts every card
+   *  back out of the trash. */
+  async function onDeleteDrawerFromBar(id) {
     const drawer = drawerById(id)
     if (!drawer) return
 
     const inside = cardsIn(id).map((card) => ({ id: card.id, position: card.position }))
-    const ok = await openConfirm({
-      title: `Delete “${drawer.name}”?`,
-      message: inside.length
-        ? `${plural(inside.length, 'card')} inside goes to the trash with it.`
-        : 'The drawer is empty, so nothing goes with it.',
-      confirmLabel: 'Delete drawer',
-      destructive: true,
-    })
-    if (!ok) return
 
     if (state.focus === id) state.focus = null
     if (!(await mutate(() => deleteDrawer(id)))) return
@@ -892,13 +892,23 @@ export function mountBoard(root, boardId) {
     if (!bar || bar.hidden) return null
 
     const rect = bar.getBoundingClientRect()
-    if (y < rect.top) return null
+    if (y < rect.top || y > rect.bottom) return null
 
-    for (const element of bar.querySelectorAll('[data-zone]')) {
+    for (const element of bar.querySelectorAll('[data-zone]:not([hidden])')) {
       const box = element.getBoundingClientRect()
       if (x >= box.left && x <= box.right) return element.dataset.zone
     }
     return null
+  }
+
+  /** Which of the bar's zones apply to what's being dragged right now — a
+   *  drawer can only be deleted, never archived. */
+  function setDropBarZones(zones) {
+    const bar = dropBarElement()
+    if (!bar) return
+    for (const element of bar.querySelectorAll('[data-zone]')) {
+      element.hidden = !zones.includes(element.dataset.zone)
+    }
   }
 
   /** The project chip the pointer is over, if any — never the current
@@ -1032,8 +1042,21 @@ export function mountBoard(root, boardId) {
       })
     }
 
-    if (before) list.insertBefore(element, before)
-    else list.append(element)
+    // Hovering the same gap on every pointer move must not re-run the move —
+    // the cards would restart their slide dozens of times a second.
+    const settled = before
+      ? element.parentElement === list && element.nextElementSibling === before
+      : element.parentElement === list && list.lastElementChild === element
+    if (settled) return
+
+    slideInto(
+      root.querySelectorAll('.drawer-cards > .card'),
+      () => {
+        if (before) list.insertBefore(element, before)
+        else list.append(element)
+      },
+      { skip: element }
+    )
 
     syncEmptyHints()
   }
@@ -1083,8 +1106,13 @@ export function mountBoard(root, boardId) {
     onStart() {
       closeMenus()
       dismissUndo()
+      setDropBarZones(['archive', 'delete'])
       const bar = dropBarElement()
       if (bar) bar.hidden = false
+      // The project bar swells while a card is in the air — a chip the size of
+      // a nav icon is a hard thing to drop onto. Only for a card: a drawer has
+      // nowhere to land down there.
+      root.querySelector('[data-project-bar]')?.classList.add('is-awaiting-drop')
     },
 
     onMove(x, y, element) {
@@ -1141,6 +1169,7 @@ export function mountBoard(root, boardId) {
     setProjectTarget(null)
     const bar = dropBarElement()
     if (bar) bar.hidden = true
+    root.querySelector('[data-project-bar]')?.classList.remove('is-awaiting-drop')
     for (const element of root.querySelectorAll('.drawer.is-dropping')) {
       element.classList.remove('is-dropping')
     }
@@ -1167,9 +1196,10 @@ export function mountBoard(root, boardId) {
     })
 
     if (before) {
-      if (moving.nextElementSibling !== before) lane.insertBefore(moving, before)
+      if (moving.nextElementSibling === before) return
+      slideInto(others, () => lane.insertBefore(moving, before), { skip: moving })
     } else if (lane.lastElementChild !== moving) {
-      lane.append(moving)
+      slideInto(others, () => lane.append(moving), { skip: moving })
     }
   }
 
@@ -1204,22 +1234,32 @@ export function mountBoard(root, boardId) {
     // against, and half a row of drawers must not be renumbered from what one
     // of them can see.
     selector: '.drawer-head[data-drawer-handle]',
-    blockSelector: '.menu, input, a, [data-no-drag]',
+    blockSelector: 'input, a, [data-no-drag]',
     scroller: () => root.querySelector('[data-lane]'),
 
     onStart(handle) {
       closeMenus()
       dismissUndo()
+      setDropBarZones(['delete'])
+      const bar = dropBarElement()
+      if (bar) bar.hidden = false
       handle.closest('.drawer')?.classList.add('is-drawer-dragging')
     },
 
     onMove(x, y, handle) {
+      const nextZone = zoneAt(x, y)
+      setZone(nextZone)
+      if (nextZone) return
       placeDrawer(x, y, handle)
     },
 
     onDrop(handle) {
+      const droppedZone = zone
+      const id = handle.closest('.drawer')?.dataset.drawer
       finishDrawerDrag(handle)
-      commitDrawerOrder()
+
+      if (droppedZone === 'delete') onDeleteDrawerFromBar(id)
+      else commitDrawerOrder()
     },
 
     onCancel(handle) {
@@ -1229,6 +1269,9 @@ export function mountBoard(root, boardId) {
   })
 
   function finishDrawerDrag(handle) {
+    setZone(null)
+    const bar = dropBarElement()
+    if (bar) bar.hidden = true
     handle?.closest('.drawer')?.classList.remove('is-drawer-dragging')
     for (const element of root.querySelectorAll('.drawer.is-drawer-dragging')) {
       element.classList.remove('is-drawer-dragging')
@@ -1354,8 +1397,8 @@ export function mountBoard(root, boardId) {
       case 'drawer-new':
         onNewDrawer()
         break
-      case 'drawer-edit':
-        onEditDrawer(drawer)
+      case 'drawer-kind':
+        onSetDrawerKind(drawer, target.dataset.kind)
         break
       case 'drawer-rename':
         onRenameDrawer(drawer)
@@ -1377,15 +1420,6 @@ export function mountBoard(root, boardId) {
       case 'drawer-unfocus':
         state.focus = null
         render()
-        break
-      case 'drawer-left':
-        mutate(() => moveDrawer(state.drawers, drawer, -1))
-        break
-      case 'drawer-right':
-        mutate(() => moveDrawer(state.drawers, drawer, 1))
-        break
-      case 'drawer-delete':
-        onDeleteDrawer(drawer)
         break
       case 'board-edit':
         onEditBoard()

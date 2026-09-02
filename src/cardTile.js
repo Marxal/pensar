@@ -199,6 +199,16 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
 
   const actions = `<div class="card-actions">${copy}${fold}${menu(card)}</div>`
 
+  // How many buttons ended up in the corner, so the shim below can reserve
+  // exactly their width and no more — a card with nothing to copy or unfold
+  // shouldn't hold a gap open for buttons it hasn't got.
+  const actionCount = 1 + (copy ? 1 : 0) + (fold ? 1 : 0)
+
+  // An empty float the width of those buttons. The heading's first line breaks
+  // around it and everything below runs the full width of the card, instead of
+  // the whole note being squeezed into the column beside them.
+  const shim = `<span class="card-actions-shim" aria-hidden="true"></span>`
+
   const note = open
     ? `<div class="card-note markdown-body">
          ${renderMarkdown(card.body_markdown)}
@@ -279,15 +289,22 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   }
 
   return `
-    <article class="card card-note-tile${open ? ' is-open' : ''}" data-card="${card.id}" data-priority="${card.priority ?? ''}" data-drag>
+    <article
+      class="card card-note-tile${open ? ' is-open' : ''}"
+      data-card="${card.id}"
+      data-priority="${card.priority ?? ''}"
+      style="--actions: ${actionCount}"
+      data-drag
+    >
       <div class="card-line">
         <button type="button" class="card-face" data-act="open" data-id="${card.id}">
           <span class="card-face-text">
+            ${shim}
+            ${open ? '' : faceImage(picture, 'card-thumb')}
             <span class="card-title">${escapeHtml(heading)}</span>
             ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
           </span>
-          ${open ? '' : faceImage(picture, 'card-thumb')}
         </button>
         ${actions}
       </div>

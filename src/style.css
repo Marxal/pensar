@@ -950,7 +950,11 @@ button {
   outline: none;
 }
 
+/* The count takes the slack, so everything after it — the expand button and
+   the shape icons — sits together at the right-hand end rather than the
+   expand button claiming the gap for itself and stranding mid-header. */
 .drawer-count {
+  margin-right: auto;
   min-width: 1.4rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
@@ -962,12 +966,19 @@ button {
   text-align: center;
 }
 
-/* Everything after this is the right-hand end of the header. */
-.drawer-head > .icon-btn {
-  margin-left: auto;
+.drawer-head > .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
-.drawer-head > .icon-btn[aria-pressed='true'] {
+/* The three shape buttons — list, notes, gallery — that pick how a drawer
+   draws its cards. Whichever one is pressed is the drawer's kind right now. */
+.drawer-shapes {
+  display: flex;
+  gap: 0.15rem;
+}
+
+.drawer-shapes .icon-btn[aria-pressed='true'] {
   color: var(--accent);
   background: var(--accent-soft);
 }
@@ -1084,6 +1095,7 @@ button {
    --------------------------------------------------------------- */
 
 .card {
+  position: relative;
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
   background: var(--paper-raised);
@@ -1124,10 +1136,40 @@ button {
   cursor: pointer;
 }
 
+/* flow-root so the corner shim and the thumbnail — both floats — count
+   towards the card's height instead of hanging out of the bottom of it. */
 .card-face-text {
   flex: 1;
   min-width: 0;
+  display: flow-root;
+}
+
+/* The buttons live in the card's own corner rather than in a column down its
+   right-hand side, and this empty float is what the first line of the heading
+   breaks around. Everything below it runs the full width of the card. */
+.card-note-tile .card-face {
   display: block;
+  padding-right: 0;
+}
+
+.card-note-tile .card-actions {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
+}
+
+.card-actions-shim {
+  float: right;
+  width: calc(var(--actions, 3) * 1.85rem + 0.3rem);
+  height: 1.5rem;
+}
+
+/* A picture tucks in under the buttons, with the words running around it. */
+.card-note-tile .card-thumb {
+  float: right;
+  clear: right;
+  margin: 0.1rem 0 0.35rem 0.55rem;
 }
 
 .card-title {
@@ -1504,8 +1546,12 @@ button {
   opacity: 0.32;
   border-style: dashed;
   box-shadow: none;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
 }
 
+/* What follows the finger. Slightly smaller than the card it came from and
+   see-through, because it is held over the very targets it would otherwise
+   hide — the project chips and the archive and delete zones. */
 .drag-ghost {
   position: fixed;
   left: 0;
@@ -1515,7 +1561,29 @@ button {
   pointer-events: none;
   box-shadow: var(--shadow-lg);
   border-color: var(--accent);
+  opacity: 0.82;
+  transform-origin: top left;
   rotate: 1.5deg;
+  scale: 0.94;
+  animation: ghost-lift 0.16s ease-out;
+}
+
+@keyframes ghost-lift {
+  from {
+    scale: 1;
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drag-ghost {
+    animation: none;
+  }
+
+  .card.is-dragging,
+  .board-tile.is-dragging {
+    transition: none;
+  }
 }
 
 body.is-dragging-card {
@@ -1539,38 +1607,43 @@ body.is-dragging-card {
   top: 0;
   z-index: 150;
   display: flex;
-  gap: 0.5rem;
-  padding: calc(0.6rem + env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-left))
-    0.6rem max(0.75rem, env(safe-area-inset-right));
+  gap: 0.6rem;
+  padding: calc(0.7rem + env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-left))
+    0.7rem max(0.75rem, env(safe-area-inset-right));
   background: color-mix(in srgb, var(--paper) 92%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--rule);
   pointer-events: none;
 }
 
+/* Big on purpose: this is aimed at with something already held, often with a
+   thumb, so the target has to be forgiving. It swells further the moment the
+   pointer is over it — see .is-armed. */
 .drop-zone {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
-  min-height: 3rem;
+  gap: 0.5rem;
+  min-height: 5.5rem;
   border: 1px dashed var(--rule-strong);
   border-radius: var(--radius-md);
   color: var(--ink-muted);
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   font-weight: 500;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
+    transform 0.18s ease;
 }
 
 .drop-zone svg {
-  width: 1.05rem;
-  height: 1.05rem;
+  width: 1.6rem;
+  height: 1.6rem;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+  transition: width 0.18s ease, height 0.18s ease;
 }
 
 .drop-zone.is-armed {
@@ -1578,6 +1651,12 @@ body.is-dragging-card {
   border-color: var(--ink-muted);
   background: var(--ink-muted);
   color: var(--paper);
+  transform: scale(1.05);
+}
+
+.drop-zone.is-armed svg {
+  width: 2rem;
+  height: 2rem;
 }
 
 .drop-zone-danger.is-armed {
@@ -1604,6 +1683,23 @@ body.is-dragging-card {
   background: color-mix(in srgb, var(--paper) 92%, transparent);
   backdrop-filter: blur(10px);
   border-top: 1px solid var(--rule);
+  transition: padding 0.18s ease;
+}
+
+/* A note, a dialog or the picture viewer covers the whole screen and brings
+   its own controls along the bottom — the nav underneath would sit on top of
+   them (it outranks the sheet), and there is nothing to navigate to while
+   one is open anyway. */
+body.has-overlay .project-bar {
+  display: none;
+}
+
+/* While a card is in the air the whole strip swells, so filing one into
+   another project is a drop onto something the size of a target rather than
+   the size of a nav icon. */
+.project-bar.is-awaiting-drop {
+  padding-top: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
 }
 
 /* A board with a project bar needs room at the foot so the fixed strip never
@@ -1631,13 +1727,13 @@ body.is-dragging-card {
   flex: none;
   display: grid;
   place-items: center;
-  padding: 0.15rem;
+  padding: 0.25rem;
   border: none;
   background: none;
   border-radius: var(--radius-md);
   cursor: pointer;
   opacity: 0.55;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
 .project-chip:hover {
@@ -1649,24 +1745,62 @@ body.is-dragging-card {
   cursor: default;
 }
 
+/* The chip grows by growing its glyph rather than by scaling itself: the row
+   scrolls sideways, which clips anything that spills out of it. */
 .project-chip .board-glyph {
   outline: 2px solid transparent;
   outline-offset: 2px;
-  transition: outline-color 0.12s ease;
+  transition: outline-color 0.12s ease, width 0.18s ease, height 0.18s ease,
+    font-size 0.18s ease;
 }
 
 .project-chip[data-current] .board-glyph {
   outline-color: var(--tint, var(--accent));
 }
 
+.project-bar.is-awaiting-drop .project-chip {
+  opacity: 0.85;
+}
+
+.project-bar.is-awaiting-drop .board-glyph-sm {
+  width: 3.1rem;
+  height: 3.1rem;
+  font-size: 1.6rem;
+}
+
 .project-chip.is-drop-target {
   opacity: 1;
-  transform: scale(1.12);
+}
+
+/* And the one under the pointer grows again, so what a let-go would do is
+   never in doubt. */
+.project-bar.is-awaiting-drop .project-chip.is-drop-target .board-glyph-sm {
+  width: 4rem;
+  height: 4rem;
+  font-size: 2rem;
 }
 
 .project-chip.is-drop-target .board-glyph {
   outline-color: var(--accent);
   outline-style: solid;
+}
+
+/* A project with neither an emoji nor a picture falls back to a drawn glyph,
+   which has to grow with the square it sits in. */
+.project-bar.is-awaiting-drop .project-chip.is-drop-target .board-glyph svg {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+/* The targets still grow — they just arrive at their size rather than
+   travelling to it. */
+@media (prefers-reduced-motion: reduce) {
+  .project-bar,
+  .project-chip .board-glyph,
+  .drop-zone,
+  .drop-zone svg {
+    transition: none;
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -1678,7 +1812,9 @@ body.is-dragging-card {
   position: fixed;
   left: 50%;
   bottom: calc(1rem + env(safe-area-inset-bottom));
-  z-index: 130;
+  /* Above the project bar (140) and drop bar (150) — an offer to undo has to
+     outrank the nav it's floating over, not sit behind it. */
+  z-index: 155;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
@@ -1690,6 +1826,12 @@ body.is-dragging-card {
   background: var(--paper-raised);
   box-shadow: var(--shadow-md);
   animation: undo-in 0.18s ease-out;
+}
+
+/* A board with more than one project has its own bar along the bottom (see
+   .project-bar) — clear it rather than land underneath. */
+.undo-toast.is-above-nav {
+  bottom: calc(4.5rem + env(safe-area-inset-bottom));
 }
 
 @keyframes undo-in {
@@ -1885,6 +2027,10 @@ body.is-dragging-card {
   border-bottom: 1px solid var(--rule);
 }
 
+.sheet-head [data-copy].is-copied {
+  color: var(--accent);
+}
+
 .sheet-status {
   flex: 1;
   min-width: 0;
@@ -1988,20 +2134,58 @@ body.is-dragging-card {
   border-color: var(--danger);
 }
 
+/* One row, always. On a narrow phone the row scrolls sideways rather than
+   wrapping into a second one and eating half the note. */
 .note-tools {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.25rem;
   padding: 0.45rem 0.75rem calc(0.45rem + env(safe-area-inset-bottom));
   border-top: 1px solid var(--rule);
   background: var(--paper-sunken);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.note-tools::-webkit-scrollbar {
+  display: none;
+}
+
+.note-tool,
+.note-due,
+.note-priority {
+  flex: none;
 }
 
 .note-tools-gap {
   flex: 1;
-  min-width: 0.5rem;
+  min-width: 0.25rem;
+}
+
+/* Trimmed just enough that the whole row fits a phone without scrolling. */
+@media (max-width: 40rem) {
+  .note-tools {
+    gap: 0.2rem;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .note-tool {
+    width: 1.95rem;
+    height: 1.95rem;
+  }
+
+  .note-priority {
+    gap: 0.25rem;
+    padding-left: 0.3rem;
+  }
+
+  .pri-dot {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
 }
 
 .note-tool {

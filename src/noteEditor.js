@@ -32,6 +32,8 @@ const SAVE_AFTER_MS = 800
 const ICONS = {
   back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg>`,
   more: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.35" fill="currentColor" stroke="none"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15.5 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h.5"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
   image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
   link: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5a3.5 3.5 0 0 0 5 0l3-3a3.54 3.54 0 0 0-5-5l-1.4 1.4M13.5 10.5a3.5 3.5 0 0 0-5 0l-3 3a3.54 3.54 0 0 0 5 5l1.4-1.4"/></svg>`,
   list: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.75" cy="6.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="17.5" r="1.1" fill="currentColor" stroke="none"/></svg>`,
@@ -164,6 +166,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         <header class="sheet-head">
           <button type="button" class="icon-btn" data-close aria-label="Close note" title="Close note">${ICONS.back}</button>
           <span class="sheet-status" data-status aria-live="polite"></span>
+          <button type="button" class="icon-btn" data-copy aria-label="Copy text" title="Copy text">${ICONS.copy}</button>
           <div class="menu">
             <button
               type="button"
@@ -175,7 +178,6 @@ export function openNote({ card = null, drawerId = null } = {}) {
               title="Note actions"
             >${ICONS.more}</button>
             <div class="menu-list" hidden>
-              <button type="button" data-act="copy">Copy text</button>
               <button type="button" data-act="archive">Archive</button>
               <button type="button" class="menu-danger" data-act="delete">Delete</button>
             </div>
@@ -253,6 +255,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     const dueLabel = backdrop.querySelector('[data-due-label]')
     const dueClear = backdrop.querySelector('[data-due-clear]')
     const imageInput = backdrop.querySelector('[data-image-input]')
+    const copyButton = backdrop.querySelector('[data-copy]')
     const menuTrigger = backdrop.querySelector('[data-menu]')
     const menuList = menuTrigger.nextElementSibling
     const editedEl = backdrop.querySelector('[data-edited]')
@@ -728,23 +731,35 @@ export function openNote({ card = null, drawerId = null } = {}) {
       menuList.hidden = open
     })
 
+    // The same flash-to-a-checkmark feedback the card tiles use for their own
+    // copy button — no clipboard permission means no visible change, which is
+    // fine since there's nothing to recover from.
+    copyButton.addEventListener('click', async () => {
+      const text = [titleEl.textContent.trim(), bodyEl.textContent.trim()]
+        .filter(Boolean)
+        .join('\n\n')
+      if (!text) return
+
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch {
+        return
+      }
+      if (closed) return
+
+      copyButton.classList.add('is-copied')
+      copyButton.innerHTML = ICONS.check
+      setTimeout(() => {
+        if (!copyButton.isConnected) return
+        copyButton.classList.remove('is-copied')
+        copyButton.innerHTML = ICONS.copy
+      }, 1200)
+    })
+
     menuList.addEventListener('click', async (event) => {
       const action = event.target.closest('[data-act]')?.dataset.act
       if (!action) return
       closeMenu()
-
-      if (action === 'copy') {
-        const text = [titleEl.textContent.trim(), bodyEl.textContent.trim()]
-          .filter(Boolean)
-          .join('\n\n')
-        try {
-          await navigator.clipboard.writeText(text)
-          setStatus('Copied')
-        } catch {
-          setError('Nothing was copied.')
-        }
-        return
-      }
 
       // Archive and delete both need the note to exist first, so whatever is
       // on screen is written away before it's filed somewhere.

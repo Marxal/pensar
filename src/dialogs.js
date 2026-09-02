@@ -87,15 +87,14 @@ export function openConfirm({
    --------------------------------------------------------------- */
 
 /**
- * Name a drawer and say what shape it is. Resolves with `{ name, kind }`, or
- * null if dismissed.
+ * Name a new drawer and say what shape it starts as — the shape can still be
+ * changed afterwards from the icons on the drawer itself. Resolves with
+ * `{ name, kind }`, or null if dismissed.
  */
-export function openDrawerDialog({ drawer = null } = {}) {
-  const editing = Boolean(drawer)
-
+export function openDrawerDialog() {
   return openModal({
     build: () => `
-      <h2 class="modal-title">${editing ? 'Edit drawer' : 'New drawer'}</h2>
+      <h2 class="modal-title">New drawer</h2>
       <form class="modal-form" novalidate>
         <label class="field">
           <span class="field-label">Name</span>
@@ -106,7 +105,6 @@ export function openDrawerDialog({ drawer = null } = {}) {
             autocomplete="off"
             maxlength="40"
             placeholder="Reading"
-            value="${escapeHtml(drawer?.name ?? '')}"
           />
         </label>
 
@@ -116,9 +114,7 @@ export function openDrawerDialog({ drawer = null } = {}) {
             ${DRAWER_KINDS.map(
               (kind) => `
                 <label class="kind-option">
-                  <input type="radio" name="kind" value="${kind}"${
-                    (drawer?.kind ?? 'notes') === kind ? ' checked' : ''
-                  }>
+                  <input type="radio" name="kind" value="${kind}"${kind === 'notes' ? ' checked' : ''}>
                   <span class="kind-option-text">
                     <span class="kind-option-name">${DRAWER_KIND_LABELS[kind]}</span>
                     <span class="kind-option-hint">${DRAWER_KIND_HINTS[kind]}</span>
@@ -131,7 +127,7 @@ export function openDrawerDialog({ drawer = null } = {}) {
 
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Add drawer'}</button>
+          <button type="submit" class="btn btn-primary">Add drawer</button>
         </div>
       </form>
     `,
