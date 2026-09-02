@@ -2,19 +2,19 @@
 // RLS scopes every row to auth.uid(); user_id defaults to auth.uid() on insert,
 // so nothing here needs to pass it explicitly.
 //
-// "Live" cards are those neither archived nor trashed — everything the board
-// view shows. Delete is a soft delete (deleted_at), so Phase 4's trash can
-// still recover it.
+// A card's placement is its `drawer_id`, and nothing else: null means it's
+// sitting in Quick notes. `board_id` is filled in by a database trigger from
+// whatever drawer the card lands in (see the 20260901230500 migration), which
+// is why nothing below ever writes it — it exists so "the cards on this board"
+// stays a single-table query.
+//
+// "Live" cards are those neither archived nor trashed — everything the boards
+// and the home screen show. Delete is a soft delete (deleted_at), so the trash
+// can still recover it.
 
 import { supabase } from './supabaseClient'
 
-export const STATUSES = ['todo', 'doing', 'done']
-
-export const STATUS_LABELS = {
-  todo: 'To do',
-  doing: 'Doing',
-  done: 'Done',
-}
+export const PRIORITIES = ['low', 'medium', 'high']
 
 export const PRIORITY_LABELS = {
   low: 'Low',
@@ -23,11 +23,11 @@ export const PRIORITY_LABELS = {
 }
 
 const COLUMNS =
-  'id, board_id, status, position, title, body_markdown, cover_image_url, due_date, priority, created_at, updated_at'
+  'id, board_id, drawer_id, position, title, body_markdown, due_date, priority, done, created_at, updated_at'
 
 const live = (query) => query.is('archived_at', null).is('deleted_at', null)
 
-/** Every live card on a board, ordered within each column. */
+/** Every live card on a board, ordered within each drawer. */
 export async function listCards(boardId) {
   const { data, error } = await live(
     supabase.from('pensar_cards').select(COLUMNS).eq('board_id', boardId)
@@ -39,10 +39,10 @@ export async function listCards(boardId) {
   return data ?? []
 }
 
-/** Live cards not yet assigned to a board — the Inbox. Newest capture first. */
-export async function listInboxCards() {
+/** Live cards not in any drawer — Quick notes. Newest capture first. */
+export async function listQuickNotes() {
   const { data, error } = await live(
-    supabase.from('pensar_cards').select(COLUMNS).is('board_id', null)
+    supabase.from('pensar_cards').select(COLUMNS).is('drawer_id', null)
   ).order('created_at', { ascending: false })
 
   if (error) throw error
@@ -64,10 +64,12 @@ export async function countCardsByBoard() {
   return counts
 }
 
-/** Highest position in a board's column. -1 when the column is empty. */
-async function lastPosition(boardId, status) {
+/** Highest position in a drawer. -1 when it's empty. */
+async function lastPosition(drawerId) {
+  const query = supabase.from('pensar_cards').select('position')
+
   const { data, error } = await live(
-    supabase.from('pensar_cards').select('position').eq('board_id', boardId).eq('status', status)
+    drawerId ? query.eq('drawer_id', drawerId) : query.is('drawer_id', null)
   )
     .order('position', { ascending: false })
     .limit(1)
@@ -77,23 +79,33 @@ async function lastPosition(boardId, status) {
   return data?.position ?? -1
 }
 
-/** Keep only the fields a card owns, and normalise blanks to null. */
-function cardFields({ title, body_markdown, due_date, priority }) {
-  return {
-    title: title.trim(),
-    body_markdown: body_markdown ?? '',
-    due_date: due_date || null,
-    priority: priority || null,
+/**
+ * Keep only the fields a card owns, and only the ones actually being set —
+ * the note editor saves as you type, and a save that carries just the title
+ * shouldn't blank the note underneath it.
+ */
+const EDITABLE = ['title', 'body_markdown', 'due_date', 'priority', 'done']
+
+function cardPatch(fields) {
+  const patch = {}
+  for (const key of EDITABLE) {
+    if (!(key in fields)) continue
+    const value = fields[key]
+    if (key === 'title') patch.title = String(value ?? '').trim()
+    else if (key === 'body_markdown') patch.body_markdown = String(value ?? '')
+    else if (key === 'done') patch.done = Boolean(value)
+    else patch[key] = value || null
   }
+  return patch
 }
 
-/** Add a card to the end of a column. */
-export async function createCard(boardId, status, fields) {
-  const position = (await lastPosition(boardId, status)) + 1
+/** Add a card to the end of a drawer, or to Quick notes when `drawerId` is null. */
+export async function createCard(drawerId, fields = {}) {
+  const position = (await lastPosition(drawerId)) + 1
 
   const { data, error } = await supabase
     .from('pensar_cards')
-    .insert({ board_id: boardId, status, position, ...cardFields(fields) })
+    .insert({ drawer_id: drawerId ?? null, position, title: '', ...cardPatch(fields) })
     .select(COLUMNS)
     .single()
 
@@ -101,22 +113,15 @@ export async function createCard(boardId, status, fields) {
   return data
 }
 
-/** Quick-capture: title only, sitting in the Inbox until assigned to a board. */
-export async function createInboxCard(title) {
-  const { data, error } = await supabase
-    .from('pensar_cards')
-    .insert({ title: title.trim(), body_markdown: '' })
-    .select(COLUMNS)
-    .single()
-
-  if (error) throw error
-  return data
+/** Quick capture: a line of text, straight into Quick notes. */
+export async function createQuickNote(title) {
+  return createCard(null, { title })
 }
 
 export async function updateCard(id, fields) {
   const { data, error } = await supabase
     .from('pensar_cards')
-    .update(cardFields(fields))
+    .update(cardPatch(fields))
     .eq('id', id)
     .select(COLUMNS)
     .single()
@@ -125,19 +130,11 @@ export async function updateCard(id, fields) {
   return data
 }
 
-/** Set or clear a card's cover image. Separate from `updateCard` because the
- *  cover saves the moment it's picked, rather than waiting on the editor's
- *  Save button — same as niu's avatar picker. */
-export async function setCardCover(id, coverImagePath) {
-  const { data, error } = await supabase
-    .from('pensar_cards')
-    .update({ cover_image_url: coverImagePath })
-    .eq('id', id)
-    .select(COLUMNS)
-    .single()
-
+/** Tick a card off, or un-tick it. Its own call because a tick box saves the
+ *  moment it's tapped, with no editor open around it. */
+export async function setCardDone(id, done) {
+  const { error } = await supabase.from('pensar_cards').update({ done }).eq('id', id)
   if (error) throw error
-  return data
 }
 
 /** Soft delete — the row stays put until the trash's scheduled purge. */
@@ -150,8 +147,25 @@ export async function trashCard(id) {
   if (error) throw error
 }
 
+/** Archive a card — off the board, but recoverable, unlike delete. */
+export async function archiveCard(id) {
+  const { error } = await supabase
+    .from('pensar_cards')
+    .update({ archived_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw error
+}
+
+/** Delete a card outright, skipping the trash. Only used to tidy away a note
+ *  that was opened and left empty — there is nothing in it to recover. */
+export async function deleteCard(id) {
+  const { error } = await supabase.from('pensar_cards').delete().eq('id', id)
+  if (error) throw error
+}
+
 /** Trashed cards, most recently deleted first, with the board they belonged
- *  to (null when it was an Inbox card). */
+ *  to (null when it was a quick note). */
 export async function listTrashedCards() {
   const { data, error } = await supabase
     .from('pensar_cards')
@@ -173,55 +187,100 @@ export async function countTrashedCards() {
   return count ?? 0
 }
 
-/** Restore a trashed card back to wherever it was — the Inbox or its board. */
+/** Restore a trashed card back to wherever it was. A card whose drawer has
+ *  since been deleted comes back to Quick notes, which is the same place the
+ *  drawer's other cards went. */
 export async function restoreCard(id) {
   const { error } = await supabase.from('pensar_cards').update({ deleted_at: null }).eq('id', id)
-
   if (error) throw error
 }
 
-/** Archive a card — off the Inbox/board, but recoverable, unlike delete. */
-export async function archiveCard(id) {
-  const { error } = await supabase
-    .from('pensar_cards')
-    .update({ archived_at: new Date().toISOString() })
-    .eq('id', id)
-
-  if (error) throw error
-}
-
-/** Send a card to the bottom of another column. */
-export async function moveCard(id, boardId, status) {
-  const position = (await lastPosition(boardId, status)) + 1
-
-  const { error } = await supabase.from('pensar_cards').update({ status, position }).eq('id', id)
-
-  if (error) throw error
-}
-
-/** Move an inbox card onto a board's column, at the end. */
-export async function assignCardToBoard(id, boardId, status) {
-  const position = (await lastPosition(boardId, status)) + 1
+/** Move a card to the end of a drawer — or to Quick notes, with a null drawer. */
+export async function moveCardToDrawer(id, drawerId) {
+  const position = (await lastPosition(drawerId)) + 1
 
   const { error } = await supabase
     .from('pensar_cards')
-    .update({ board_id: boardId, status, position })
+    .update({ drawer_id: drawerId ?? null, position })
     .eq('id', id)
 
   if (error) throw error
 }
 
 /**
- * Persist a drag: `moves` is `[{ id, status, position }]`, already narrowed to
- * the rows that actually shifted. Positions stay dense (0..n-1 per column).
+ * Persist a drag: `moves` is `[{ id, drawer_id, position }]`, already narrowed
+ * to the rows that actually shifted. Positions stay dense (0..n-1 per drawer).
  */
 export async function saveOrder(moves) {
   const results = await Promise.all(
-    moves.map(({ id, status, position }) =>
-      supabase.from('pensar_cards').update({ status, position }).eq('id', id)
+    moves.map(({ id, drawer_id, position }) =>
+      supabase.from('pensar_cards').update({ drawer_id, position }).eq('id', id)
     )
   )
 
   const failed = results.find((result) => result.error)
   if (failed) throw failed.error
+}
+
+/* ---------------------------------------------------------------
+   Merging
+   --------------------------------------------------------------- */
+
+const PRIORITY_RANK = { low: 1, medium: 2, high: 3 }
+
+/** The stronger of two priorities, either of which may be missing. */
+function strongerPriority(a, b) {
+  if (!a) return b ?? null
+  if (!b) return a
+  return (PRIORITY_RANK[a] ?? 0) >= (PRIORITY_RANK[b] ?? 0) ? a : b
+}
+
+/** The sooner of two due dates, either of which may be missing. */
+function soonerDate(a, b) {
+  if (!a) return b ?? null
+  if (!b) return a
+  return a <= b ? a : b
+}
+
+/**
+ * Fold `sourceId` into `targetId` — the card that was dropped goes into the
+ * card it was dropped on. The target keeps its title and gains the source's
+ * note underneath its own, with the source's title as a heading above it so
+ * nothing is lost silently.
+ *
+ * The source is trashed rather than deleted, which is what makes this safe to
+ * do on a gesture: an accidental merge is one trip to the trash away from
+ * being undone.
+ */
+export async function mergeCards(targetId, sourceId) {
+  const { data, error } = await supabase
+    .from('pensar_cards')
+    .select(COLUMNS)
+    .in('id', [targetId, sourceId])
+
+  if (error) throw error
+
+  const target = data?.find((card) => card.id === targetId)
+  const source = data?.find((card) => card.id === sourceId)
+  if (!target || !source) throw new Error('One of those cards is no longer there.')
+
+  const sourceTitle = source.title.trim()
+  const keepsSourceTitle = Boolean(sourceTitle) && Boolean(target.title.trim())
+
+  const body = [
+    target.body_markdown.trim(),
+    keepsSourceTitle ? `**${sourceTitle}**` : '',
+    source.body_markdown.trim(),
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  await updateCard(targetId, {
+    title: target.title.trim() || sourceTitle,
+    body_markdown: body,
+    due_date: soonerDate(target.due_date, source.due_date),
+    priority: strongerPriority(target.priority, source.priority),
+  })
+
+  await trashCard(sourceId)
 }

@@ -1,9 +1,9 @@
 import './style.css'
 import { supabase } from './supabaseClient'
 import { initTheme, cycleTheme, paintThemeButton } from './theme'
-import { mountBoards } from './boardsView'
+import { mountHome } from './homeView'
 import { mountBoard } from './boardView'
-import { mountInbox } from './inboxView'
+import { mountArchived } from './archivedView'
 import { mountTrash } from './trashView'
 
 const app = document.querySelector('#app')
@@ -68,9 +68,10 @@ function parseRoute() {
   const board = location.hash.match(/^#\/board\/([0-9a-f-]{36})$/i)
   if (board) return { name: 'board', id: board[1] }
   if (location.hash === '#/archived') return { name: 'archived' }
-  if (location.hash === '#/boards') return { name: 'boards' }
   if (location.hash === '#/trash') return { name: 'trash' }
-  return { name: 'inbox' }
+  // Quick notes and projects share the home screen now; #/boards is kept
+  // pointing at it so an old bookmark or install shortcut still lands.
+  return { name: 'home' }
 }
 
 /* ---------------------------------------------------------------
@@ -108,9 +109,10 @@ function mountInstallButton(button) {
   })
 }
 
-/** Highlight whichever topbar link owns the current route — boards, archived and a single board all belong to "Boards". */
+/** Highlight whichever topbar link owns the current route — a single board and
+ *  the archive both belong to Home, which is where they're reached from. */
 function paintNav(routeName) {
-  const group = routeName === 'board' || routeName === 'archived' ? 'boards' : routeName
+  const group = routeName === 'trash' ? 'trash' : 'home'
   for (const link of document.querySelectorAll('.topbar-link')) {
     link.classList.toggle('is-active', link.dataset.route === group)
   }
@@ -140,11 +142,11 @@ function mountRoute() {
   unmountView =
     route.name === 'board'
       ? mountBoard(view, route.id)
-      : route.name === 'inbox'
-        ? mountInbox(view, { autoFocus: isNewNoteShortcut })
-        : route.name === 'trash'
-          ? mountTrash(view)
-          : mountBoards(view, route.name === 'archived' ? 'archived' : 'active')
+      : route.name === 'trash'
+        ? mountTrash(view)
+        : route.name === 'archived'
+          ? mountArchived(view)
+          : mountHome(view, { autoFocus: isNewNoteShortcut })
 }
 
 function renderApp() {
@@ -154,8 +156,7 @@ function renderApp() {
         <div class="topbar-inner">
           <span class="brand">pensar</span>
           <nav class="topbar-nav">
-            <a class="topbar-link" data-route="inbox" href="#/">Inbox</a>
-            <a class="topbar-link" data-route="boards" href="#/boards">Boards</a>
+            <a class="topbar-link" data-route="home" href="#/">Home</a>
             <a class="topbar-link" data-route="trash" href="#/trash">Trash</a>
           </nav>
           <div class="topbar-actions">

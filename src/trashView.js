@@ -5,19 +5,13 @@
 
 import { listTrashedBoards, restoreTrashedBoard } from './boards'
 import { listTrashedCards, restoreCard } from './cards'
+import { cardHeading } from './cardTile'
 import { escapeHtml, formatDate, plural } from './format'
-import { plainText } from './markdown'
 
 const ICONS = {
   board: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="4.5" height="16" rx="1.2"/><rect x="9.75" y="4" width="4.5" height="11" rx="1.2"/><rect x="16.5" y="4" width="4.5" height="7" rx="1.2"/></svg>`,
   card: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5zM8.5 9h7M8.5 12.5h7M8.5 16h4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
-}
-
-/** A title stands in for the card's heading; a titleless card leans on its note instead. */
-function cardHeading(card) {
-  const text = card.title.trim() || plainText(card.body_markdown)
-  return text.length > 80 ? `${text.slice(0, 80)}…` : text || 'Untitled'
 }
 
 /**
@@ -53,7 +47,7 @@ export function mountTrash(root) {
   }
 
   function cardRow(card) {
-    const from = card.board?.name ?? 'Inbox'
+    const from = card.board?.name ?? 'Quick notes'
 
     return `
       <article class="board-tile board-tile-archived" data-type="card" data-id="${card.id}">

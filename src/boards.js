@@ -3,8 +3,9 @@
 // so nothing here needs to pass it explicitly.
 
 import { supabase } from './supabaseClient'
+import { createDrawer, FIRST_DRAWER } from './drawers'
 
-const COLUMNS = 'id, name, position, archived_at, deleted_at, created_at'
+const COLUMNS = 'id, name, colour, emoji, icon_path, position, archived_at, deleted_at, created_at'
 
 /** Active boards, in display order. */
 export async function listBoards() {
@@ -92,12 +93,27 @@ async function lastPosition() {
   return data?.position ?? -1
 }
 
-export async function createBoard(name) {
+/** Create a board, with the one drawer it starts life with. */
+export async function createBoard(name, style = {}) {
   const position = (await lastPosition()) + 1
 
   const { data, error } = await supabase
     .from('pensar_boards')
-    .insert({ name, position })
+    .insert({ name: name.trim(), position, ...boardStylePatch(style) })
+    .select(COLUMNS)
+    .single()
+
+  if (error) throw error
+
+  await createDrawer(data.id, FIRST_DRAWER)
+  return data
+}
+
+export async function renameBoard(id, name) {
+  const { data, error } = await supabase
+    .from('pensar_boards')
+    .update({ name: name.trim() })
+    .eq('id', id)
     .select(COLUMNS)
     .single()
 
@@ -105,10 +121,27 @@ export async function createBoard(name) {
   return data
 }
 
-export async function renameBoard(id, name) {
+/** Only the look-and-feel fields, and only the ones being set. An icon image
+ *  beats an emoji, so picking one clears the other rather than leaving a board
+ *  with two icons and a rule about which wins. */
+function boardStylePatch(style) {
+  const patch = {}
+  if ('colour' in style) patch.colour = style.colour
+  if ('emoji' in style) {
+    patch.emoji = style.emoji || null
+    if (patch.emoji) patch.icon_path = null
+  }
+  if ('icon_path' in style) {
+    patch.icon_path = style.icon_path || null
+    if (patch.icon_path) patch.emoji = null
+  }
+  return patch
+}
+
+export async function setBoardStyle(id, style) {
   const { data, error } = await supabase
     .from('pensar_boards')
-    .update({ name })
+    .update(boardStylePatch(style))
     .eq('id', id)
     .select(COLUMNS)
     .single()

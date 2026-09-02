@@ -1,51 +1,48 @@
-// A single board: three fixed columns (To do / Doing / Done) driven by the
-// card's status, with drag-and-drop between and within them.
+// One board: as many drawers as you've made, side by side on a wide screen and
+// stacked on a phone. A drawer's kind decides how its cards are drawn — see
+// cardTile.js — and nothing about a card changes when a drawer changes shape.
 //
-// Dragging is built on pointer events rather than HTML5 drag-and-drop, which
-// never fires on iOS. Mouse drags start anywhere on a card; touch drags start
-// from the grip, so a finger on the card body still scrolls the page.
+// Dragging is the shared engine in drag.js: press and move with a mouse, press
+// and hold with a finger. Three things can happen at the end of one:
+//
+//   - dropped between cards, it moves and reorders;
+//   - held over another card until it lights up, it merges into it;
+//   - dropped on the bar that appears along the bottom, it's archived or binned.
 
-import { getBoard } from './boards'
+import { getBoard, listBoards, renameBoard, setBoardStyle, archiveBoard, trashBoard } from './boards'
+import { listAllDrawers, createDrawer, updateDrawer, deleteDrawer, moveDrawer } from './drawers'
 import {
-  STATUSES,
-  STATUS_LABELS,
-  PRIORITY_LABELS,
   listCards,
   createCard,
-  updateCard,
+  setCardDone,
+  archiveCard,
   trashCard,
-  moveCard,
+  moveCardToDrawer,
+  mergeCards,
   saveOrder,
 } from './cards'
-import { openCardEditor, openConfirm } from './dialogs'
-import { escapeHtml, plural, dueInfo } from './format'
-import { plainText, firstImageUrl } from './markdown'
-import { signCoverImages } from './images'
+import { openBoardDialog, openConfirm, openDrawerDialog, openMovePicker } from './dialogs'
+import { openNote } from './noteEditor'
+import { openLightbox } from './lightbox'
+import { renderCard, cardHeading, dressNotes } from './cardTile'
+import { renderBoardGlyph } from './boardStyle'
+import { createDragEngine } from './drag'
+import { signImages } from './images'
+import { hydrateNoteImages, plainText } from './markdown'
+import { isCardOpen, toggleCardOpen } from './openCards'
+import { escapeHtml, plural } from './format'
 
 const ICONS = {
   back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg>`,
   more: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.35" fill="currentColor" stroke="none"/></svg>`,
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
-  grip: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="6" r="1.3"/><circle cx="15" cy="6" r="1.3"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/><circle cx="9" cy="18" r="1.3"/><circle cx="15" cy="18" r="1.3"/></svg>`,
-  note: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5zM8.5 9h7M8.5 12.5h7M8.5 16h4"/></svg>`,
-  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V6.75A1.75 1.75 0 0 0 13.75 5H6.75A1.75 1.75 0 0 0 5 6.75v7A1.75 1.75 0 0 0 6.75 15.5H8.5"/></svg>`,
+  archive: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="4" rx="1.2"/><path d="M4.75 8.5v9.25a1.75 1.75 0 0 0 1.75 1.75h11a1.75 1.75 0 0 0 1.75-1.75V8.5M10 12.5h4"/></svg>`,
+  trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
   check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
 }
 
-/** Pixels of movement before a press turns into a drag. */
-const DRAG_THRESHOLD = 5
-
-/** Distance from the viewport edge at which a drag starts scrolling. */
-const SCROLL_MARGIN = 72
-
-function excerpt(text) {
-  return text.length > 110 ? `${text.slice(0, 110)}…` : text
-}
-
-/** A title stands in for the heading; a titleless card leans on its note instead. */
-function cardHeading(card, bodyText) {
-  return card.title.trim() || excerpt(bodyText) || 'Untitled'
-}
+/** How long a card has to be held over another before the two would merge. */
+const MERGE_DWELL_MS = 520
 
 /**
  * Render one board into `root`. Returns an unmount function that tears down
@@ -54,8 +51,11 @@ function cardHeading(card, bodyText) {
 export function mountBoard(root, boardId) {
   const state = {
     board: null,
+    drawers: [],
     cards: [],
-    coverLinks: new Map(), // cover_image_url (storage path) → signed URL
+    boards: [], // for the "move to" picker
+    allDrawers: [],
+    images: new Map(), // storage path → signed URL
     status: 'loading', // loading | ready | error | missing
     error: '',
     busy: false, // an action is in flight; blocks double-taps
@@ -63,140 +63,135 @@ export function mountBoard(root, boardId) {
 
   let alive = true
 
-  // Drag bookkeeping. `pending` is a press that hasn't passed the threshold yet.
-  let pending = null
-  let drag = null
-  let lastDragEnd = 0
-  let activePointerId = null
+  // Drag bookkeeping: the bar zone under the pointer, and the card the dragged
+  // one would fold into if it were let go now.
+  let zone = null
+  let mergeTarget = null
+  let mergeCandidate = null
+  let mergeTimer = null
 
   /* ---------------------------------------------------------------
      Markup
      --------------------------------------------------------------- */
 
-  function cardMenu(card) {
-    const moves = STATUSES.filter((status) => status !== card.status)
-      .map(
-        (status) =>
-          `<button type="button" data-action="move" data-id="${card.id}" data-status="${status}">Move to ${STATUS_LABELS[status]}</button>`
-      )
-      .join('')
-
-    return `
-      <div class="menu">
-        <button
-          class="icon-btn icon-btn-sm menu-trigger"
-          data-action="menu"
-          aria-haspopup="true"
-          aria-expanded="false"
-          aria-label="Card actions"
-          title="Card actions"
-        >${ICONS.more}</button>
-        <div class="menu-list" hidden>
-          <button type="button" data-action="edit" data-id="${card.id}">Edit</button>
-          ${moves}
-          <button type="button" class="menu-danger" data-action="delete" data-id="${card.id}">Delete</button>
-        </div>
-      </div>
-    `
-  }
-
-  function cardTags(card) {
-    const tags = []
-
-    if (card.priority) {
-      tags.push(
-        `<span class="tag tag-priority tag-${card.priority}">${PRIORITY_LABELS[card.priority]}</span>`
-      )
-    }
-
-    const due = dueInfo(card.due_date)
-    if (due) {
-      const tone = due.overdue ? ' is-overdue' : due.today ? ' is-today' : ''
-      tags.push(`<span class="tag tag-due${tone}">${escapeHtml(due.label)}</span>`)
-    }
-
-    if (card.body_markdown.trim()) {
-      tags.push(`<span class="tag tag-note" title="Has a note">${ICONS.note}</span>`)
-    }
-
-    return tags.length ? `<div class="card-tags">${tags.join('')}</div>` : ''
-  }
-
-  function cardTile(card) {
-    const hasTitle = Boolean(card.title.trim())
-    const bodyText = plainText(card.body_markdown)
-    const heading = cardHeading(card, bodyText)
-    // A titleless card already spends its note text on the heading — showing
-    // it again underneath would just repeat the same words.
-    const body = hasTitle ? excerpt(bodyText) : ''
-    // The cover image wins over a link preview picked up from the note body.
-    const thumb = state.coverLinks.get(card.cover_image_url) ?? firstImageUrl(card.body_markdown)
-
-    return `
-      <article class="card" data-card="${card.id}" data-action="edit" data-id="${card.id}">
-        <button class="card-grip" data-action="grip" tabindex="-1" aria-hidden="true">${ICONS.grip}</button>
-        <div class="card-main">
-          <div class="card-body">
-            <h4 class="card-title">${escapeHtml(heading)}</h4>
-            ${body ? `<p class="card-excerpt">${escapeHtml(body)}</p>` : ''}
-            ${cardTags(card)}
-          </div>
-          ${thumb ? `<img class="card-thumb" src="${escapeHtml(thumb)}" alt="" loading="lazy">` : ''}
-        </div>
-        <button
-          class="icon-btn icon-btn-sm card-copy"
-          data-action="copy"
-          data-id="${card.id}"
-          aria-label="Copy card text"
-          title="Copy card text"
-        >${ICONS.copy}</button>
-        ${cardMenu(card)}
-      </article>
-    `
-  }
-
-  function cardsIn(status) {
+  function cardsIn(drawerId) {
     return state.cards
-      .filter((card) => card.status === status)
+      .filter((card) => card.drawer_id === drawerId)
       .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at))
   }
 
-  function column(status) {
-    const cards = cardsIn(status)
+  function drawerSection(drawer, index) {
+    const cards = cardsIn(drawer.id)
+
+    const adder =
+      drawer.kind === 'list'
+        ? `<form class="drawer-add-line" data-add-form data-drawer="${drawer.id}">
+             <input
+               class="drawer-add-input"
+               type="text"
+               name="title"
+               autocomplete="off"
+               maxlength="200"
+               placeholder="Add an item…"
+             />
+             <button type="submit" class="icon-btn icon-btn-sm" aria-label="Add" title="Add">${ICONS.plus}</button>
+           </form>`
+        : `<button type="button" class="drawer-add" data-act="add" data-drawer="${drawer.id}">
+             ${ICONS.plus} Add ${drawer.kind === 'gallery' ? 'picture' : 'note'}
+           </button>`
 
     return `
-      <section class="column" data-status="${status}">
-        <header class="column-head">
-          <h3 class="column-title">${STATUS_LABELS[status]}</h3>
-          <span class="column-count">${cards.length}</span>
+      <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}">
+        <header class="drawer-head">
+          <h3 class="drawer-title">${escapeHtml(drawer.name)}</h3>
+          <span class="drawer-count">${cards.length}</span>
+          <div class="menu">
+            <button
+              type="button"
+              class="icon-btn icon-btn-sm menu-trigger"
+              data-act="menu"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="Drawer actions"
+              title="Drawer actions"
+            >${ICONS.more}</button>
+            <div class="menu-list" hidden>
+              <button type="button" data-act="drawer-edit" data-drawer="${drawer.id}">Rename &amp; reshape…</button>
+              <button type="button" data-act="drawer-left" data-drawer="${drawer.id}"${index === 0 ? ' disabled' : ''}>Move earlier</button>
+              <button type="button" data-act="drawer-right" data-drawer="${drawer.id}"${
+                index === state.drawers.length - 1 ? ' disabled' : ''
+              }>Move later</button>
+              <button type="button" class="menu-danger" data-act="drawer-delete" data-drawer="${drawer.id}">Delete drawer</button>
+            </div>
+          </div>
         </header>
-        <div class="column-cards">
-          ${cards.map(cardTile).join('')}
-          <p class="column-empty"${cards.length ? ' hidden' : ''}>Nothing here yet</p>
+
+        <div class="drawer-cards" data-cards>
+          ${cards
+            .map((card) => renderCard(card, { kind: drawer.kind, expanded: isCardOpen(card.id) }))
+            .join('')}
+          <p class="drawer-empty"${cards.length ? ' hidden' : ''}>Nothing here yet</p>
         </div>
-        <button class="column-add" data-action="add" data-status="${status}">
-          ${ICONS.plus} Add card
-        </button>
+
+        ${adder}
       </section>
     `
   }
 
   function skeletons() {
     return `
-      <div class="kanban">
-        ${STATUSES.map(
-          (status) => `
-            <section class="column">
-              <header class="column-head">
-                <h3 class="column-title">${STATUS_LABELS[status]}</h3>
-              </header>
-              <div class="column-cards">
-                <div class="card card-skeleton"></div>
-                <div class="card card-skeleton"></div>
-              </div>
-            </section>
-          `
-        ).join('')}
+      <div class="drawers">
+        ${'<section class="drawer"><div class="drawer-cards"><div class="card card-skeleton"></div><div class="card card-skeleton"></div></div></section>'.repeat(
+          2
+        )}
+      </div>
+    `
+  }
+
+  function head() {
+    const sub =
+      state.status === 'ready'
+        ? `${plural(state.cards.length, 'card')} · ${plural(state.drawers.length, 'drawer')}`
+        : '&nbsp;'
+
+    return `
+      <header class="page-head">
+        <div class="page-head-text">
+          <button type="button" class="icon-btn" data-act="back" aria-label="Back" title="Back">${ICONS.back}</button>
+          ${state.board ? renderBoardGlyph(state.board, state.images) : ''}
+          <div>
+            <h2 class="page-title">${escapeHtml(state.board?.name ?? 'Board')}</h2>
+            <p class="page-sub">${sub}</p>
+          </div>
+        </div>
+        <div class="page-head-actions">
+          <button type="button" class="btn btn-ghost btn-sm" data-act="drawer-new">${ICONS.plus} Drawer</button>
+          <div class="menu">
+            <button
+              type="button"
+              class="icon-btn menu-trigger"
+              data-act="menu"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="Board actions"
+              title="Board actions"
+            >${ICONS.more}</button>
+            <div class="menu-list" hidden>
+              <button type="button" data-act="board-edit">Name, colour &amp; icon…</button>
+              <button type="button" data-act="board-archive">Archive board</button>
+              <button type="button" class="menu-danger" data-act="board-delete">Delete board</button>
+            </div>
+          </div>
+        </div>
+      </header>
+    `
+  }
+
+  function dropBar() {
+    return `
+      <div class="drop-bar" data-drop-bar hidden aria-hidden="true">
+        <div class="drop-zone" data-zone="archive">${ICONS.archive}<span>Archive</span></div>
+        <div class="drop-zone drop-zone-danger" data-zone="delete">${ICONS.trash}<span>Delete</span></div>
       </div>
     `
   }
@@ -207,33 +202,19 @@ export function mountBoard(root, boardId) {
         <section class="page">
           <header class="page-head">
             <div class="page-head-text">
-              <button class="icon-btn" data-action="back" aria-label="Back to boards" title="Back to boards">${ICONS.back}</button>
+              <button type="button" class="icon-btn" data-act="back" aria-label="Back" title="Back">${ICONS.back}</button>
               <div><h2 class="page-title">Board not found</h2></div>
             </div>
           </header>
           <div class="empty-state">
             <h3>That board isn't here</h3>
             <p>It may have been deleted, or the link is out of date.</p>
-            <button class="btn btn-primary" data-action="back">Back to boards</button>
+            <button type="button" class="btn btn-primary" data-act="back">Back home</button>
           </div>
         </section>
       `
       return
     }
-
-    const head = `
-      <header class="page-head">
-        <div class="page-head-text">
-          <button class="icon-btn" data-action="back" aria-label="Back to boards" title="Back to boards">${ICONS.back}</button>
-          <div>
-            <h2 class="page-title">${escapeHtml(state.board?.name ?? 'Board')}</h2>
-            <p class="page-sub">${
-              state.status === 'ready' ? plural(state.cards.length, 'card') : '&nbsp;'
-            }</p>
-          </div>
-        </div>
-      </header>
-    `
 
     let body
     if (state.status === 'loading') {
@@ -242,14 +223,28 @@ export function mountBoard(root, boardId) {
       body = `
         <div class="banner banner-error">
           <p>${escapeHtml(state.error)}</p>
-          <button class="btn btn-ghost btn-sm" data-action="retry">Try again</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-act="retry">Try again</button>
+        </div>
+      `
+    } else if (!state.drawers.length) {
+      body = `
+        <div class="empty-state">
+          <h3>No drawers yet</h3>
+          <p>A drawer is a column with a name and a shape — a tick list, a set of notes, or a gallery.</p>
+          <button type="button" class="btn btn-primary" data-act="drawer-new">${ICONS.plus} New drawer</button>
         </div>
       `
     } else {
-      body = `<div class="kanban">${STATUSES.map(column).join('')}</div>`
+      body = `
+        <div class="drawers" data-lane>
+          ${state.drawers.map(drawerSection).join('')}
+        </div>
+      `
     }
 
-    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}">${head}${body}</section>`
+    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}">${head()}${body}</section>${dropBar()}`
+    hydrateNoteImages(root)
+    dressNotes(root)
   }
 
   /* ---------------------------------------------------------------
@@ -257,23 +252,30 @@ export function mountBoard(root, boardId) {
      --------------------------------------------------------------- */
 
   async function load() {
-    state.status = 'loading'
-    render()
+    if (state.status !== 'ready') render()
 
     try {
-      const [board, cards] = await Promise.all([getBoard(boardId), listCards(boardId)])
+      const [board, allDrawers, cards, boards] = await Promise.all([
+        getBoard(boardId),
+        listAllDrawers(),
+        listCards(boardId),
+        listBoards(),
+      ])
       if (!alive) return
 
-      if (!board) {
+      if (!board || board.deleted_at) {
         state.status = 'missing'
         render()
         return
       }
 
       state.board = board
+      state.allDrawers = allDrawers
+      state.drawers = allDrawers.filter((drawer) => drawer.board_id === boardId)
       state.cards = cards
+      state.boards = boards
       state.status = 'ready'
-      signCovers()
+      paintBoardIcon()
     } catch (error) {
       if (!alive) return
       state.status = 'error'
@@ -282,13 +284,17 @@ export function mountBoard(root, boardId) {
     render()
   }
 
-  /** Sign every card's cover in one call, then re-render once the links land
-   *  — the board itself doesn't wait on this, same as niu's avatar links. */
-  async function signCovers() {
-    const paths = state.cards.map((card) => card.cover_image_url).filter(Boolean)
-    const links = await signCoverImages(paths)
+  /** The board's own icon, which is drawn straight into the header rather than
+   *  hydrated afterwards like the pictures on the cards. */
+  async function paintBoardIcon() {
+    if (!state.board?.icon_path) return
+
+    const links = await signImages([state.board.icon_path])
     if (!alive) return
-    state.coverLinks = links
+
+    const url = links.get(state.board.icon_path)
+    if (!url || url === state.images.get(state.board.icon_path)) return
+    state.images = links
     render()
   }
 
@@ -311,6 +317,19 @@ export function mountBoard(root, boardId) {
     }
   }
 
+  /** A change the eye has already seen: keep the optimistic render, and only
+   *  reload if the database disagrees. */
+  async function mutateQuietly(fn) {
+    try {
+      await fn()
+    } catch (error) {
+      if (!alive) return
+      state.status = 'error'
+      state.error = error?.message || 'That did not go through.'
+      render()
+    }
+  }
+
   /* ---------------------------------------------------------------
      Actions
      --------------------------------------------------------------- */
@@ -319,23 +338,40 @@ export function mountBoard(root, boardId) {
     return state.cards.find((card) => card.id === id)
   }
 
-  async function onAdd(status) {
-    const fields = await openCardEditor({ columnLabel: STATUS_LABELS[status] })
-    if (fields) await mutate(() => createCard(boardId, status, fields))
+  function drawerById(id) {
+    return state.drawers.find((drawer) => drawer.id === id)
   }
 
-  async function onEdit(id) {
+  async function openCard(card, drawerId) {
+    const { changed } = await openNote(card ? { card } : { drawerId })
+    if (changed && alive) await load()
+  }
+
+  async function onAddNote(drawerId) {
+    await openCard(null, drawerId)
+  }
+
+  async function onQuickAdd(drawerId, title) {
+    if (!title.trim()) return
+    try {
+      await createCard(drawerId, { title })
+      if (!alive) return
+      await load()
+      root.querySelector(`[data-add-form][data-drawer="${drawerId}"] input`)?.focus()
+    } catch (error) {
+      if (!alive) return
+      state.status = 'error'
+      state.error = error?.message || 'That did not go through.'
+      render()
+    }
+  }
+
+  function onTick(id) {
     const card = cardById(id)
     if (!card) return
-
-    const fields = await openCardEditor({
-      card,
-      columnLabel: STATUS_LABELS[card.status],
-      // The cover saves itself immediately, independent of Save/Cancel below
-      // — reload so the tile's thumbnail picks it up even on a cancel.
-      onCoverChange: load,
-    })
-    if (fields) await mutate(() => updateCard(id, fields))
+    card.done = !card.done
+    render()
+    mutateQuietly(() => setCardDone(id, card.done))
   }
 
   async function onDelete(id) {
@@ -343,7 +379,7 @@ export function mountBoard(root, boardId) {
     if (!card) return
 
     const ok = await openConfirm({
-      title: `Delete “${cardHeading(card, plainText(card.body_markdown))}”?`,
+      title: `Delete “${cardHeading(card, 60)}”?`,
       message: 'It moves to the trash rather than vanishing outright.',
       confirmLabel: 'Delete',
       destructive: true,
@@ -351,8 +387,20 @@ export function mountBoard(root, boardId) {
     if (ok) await mutate(() => trashCard(id))
   }
 
-  /** Copy a card's title and note as plain text. Flashes the button's icon
-   *  to a checkmark as the only feedback — no clipboard permission means no
+  async function onMove(id) {
+    const card = cardById(id)
+    if (!card) return
+
+    const picked = await openMovePicker({
+      boards: state.boards,
+      drawers: state.allDrawers,
+      currentDrawerId: card.drawer_id,
+    })
+    if (picked) await mutate(() => moveCardToDrawer(id, picked.drawerId))
+  }
+
+  /** Copy a card's title and note as plain text. Flashes the button's icon to
+   *  a checkmark as the only feedback — no clipboard permission means no
    *  visible change, which is fine since there's nothing to recover from. */
   async function onCopy(id, button) {
     const card = cardById(id)
@@ -368,13 +416,80 @@ export function mountBoard(root, boardId) {
     }
     if (!alive || !button.isConnected) return
 
+    const original = button.innerHTML
     button.classList.add('is-copied')
     button.innerHTML = ICONS.check
     setTimeout(() => {
       if (!button.isConnected) return
       button.classList.remove('is-copied')
-      button.innerHTML = ICONS.copy
+      button.innerHTML = original
     }, 1200)
+  }
+
+  async function onNewDrawer() {
+    const fields = await openDrawerDialog()
+    if (fields) await mutate(() => createDrawer(boardId, fields))
+  }
+
+  async function onEditDrawer(id) {
+    const drawer = drawerById(id)
+    if (!drawer) return
+
+    const fields = await openDrawerDialog({ drawer })
+    if (fields) await mutate(() => updateDrawer(id, fields))
+  }
+
+  async function onDeleteDrawer(id) {
+    const drawer = drawerById(id)
+    if (!drawer) return
+
+    const count = cardsIn(id).length
+    const ok = await openConfirm({
+      title: `Delete “${drawer.name}”?`,
+      message: count
+        ? `${plural(count, 'card')} inside will go back to Quick notes — nothing is deleted with it.`
+        : 'The drawer is empty, so nothing goes with it.',
+      confirmLabel: 'Delete drawer',
+      destructive: true,
+    })
+    if (ok) await mutate(() => deleteDrawer(id))
+  }
+
+  async function onEditBoard() {
+    const fields = await openBoardDialog({ board: state.board })
+    if (!fields) {
+      // The icon picture saves itself, so a cancel can still have changed one.
+      await load()
+      return
+    }
+
+    await mutate(async () => {
+      if (fields.name !== state.board.name) await renameBoard(boardId, fields.name)
+      await setBoardStyle(boardId, { colour: fields.colour, emoji: fields.emoji })
+    })
+  }
+
+  async function onArchiveBoard() {
+    const ok = await openConfirm({
+      title: `Archive “${state.board.name}”?`,
+      message: 'It leaves your board list but keeps its cards. You can restore it any time.',
+      confirmLabel: 'Archive',
+    })
+    if (!ok) return
+    await archiveBoard(boardId)
+    location.hash = '#/'
+  }
+
+  async function onDeleteBoard() {
+    const ok = await openConfirm({
+      title: `Delete “${state.board.name}”?`,
+      message: 'It moves to the trash rather than vanishing outright.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    })
+    if (!ok) return
+    await trashBoard(boardId)
+    location.hash = '#/'
   }
 
   /* ---------------------------------------------------------------
@@ -398,27 +513,91 @@ export function mountBoard(root, boardId) {
   }
 
   /* ---------------------------------------------------------------
-     Drag and drop
+     Dragging
      --------------------------------------------------------------- */
 
-  /** Hide the "Drop a card here" hint in any column that now holds cards. */
+  function dropBarElement() {
+    return root.querySelector('[data-drop-bar]')
+  }
+
+  /** Which bar zone the pointer is over, if any. */
+  function zoneAt(x, y) {
+    const bar = dropBarElement()
+    if (!bar || bar.hidden) return null
+
+    const rect = bar.getBoundingClientRect()
+    if (y < rect.top) return null
+
+    for (const element of bar.querySelectorAll('[data-zone]')) {
+      const box = element.getBoundingClientRect()
+      if (x >= box.left && x <= box.right) return element.dataset.zone
+    }
+    return null
+  }
+
+  function setZone(next) {
+    if (zone === next) return
+    zone = next
+    for (const element of root.querySelectorAll('[data-zone]')) {
+      element.classList.toggle('is-armed', element.dataset.zone === zone)
+    }
+  }
+
+  /** The card under the pointer, ignoring the one being dragged. */
+  function cardAt(x, y, dragged) {
+    for (const element of root.querySelectorAll('.card[data-card]')) {
+      if (element === dragged) continue
+      const rect = element.getBoundingClientRect()
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return element
+    }
+    return null
+  }
+
+  /** True when the pointer is over a card's middle rather than its edges —
+   *  the edges are for slotting between cards, the middle is for merging. */
+  function overMiddle(element, y) {
+    const rect = element.getBoundingClientRect()
+    const band = Math.min(Math.max(rect.height * 0.3, 12), 40)
+    return y > rect.top + band && y < rect.bottom - band
+  }
+
+  function clearMerge() {
+    clearTimeout(mergeTimer)
+    mergeCandidate = null
+    if (mergeTarget) mergeTarget.classList.remove('is-merge-target')
+    mergeTarget = null
+  }
+
+  /** Hovering a card's middle arms a merge, but only once it's been held —
+   *  passing over a card on the way somewhere else must not swallow it. */
+  function considerMerge(element) {
+    if (mergeCandidate === element) return
+    clearMerge()
+    mergeCandidate = element
+    if (!element) return
+
+    mergeTimer = setTimeout(() => {
+      if (!drag.isDragging()) return
+      mergeTarget = element
+      element.classList.add('is-merge-target')
+      navigator.vibrate?.(10)
+    }, MERGE_DWELL_MS)
+  }
+
+  /** Hide the "nothing here yet" line in any drawer that now holds a card. */
   function syncEmptyHints() {
-    for (const list of root.querySelectorAll('.column-cards')) {
-      const hint = list.querySelector('.column-empty')
+    for (const list of root.querySelectorAll('.drawer-cards')) {
+      const hint = list.querySelector('.drawer-empty')
       if (hint) hint.hidden = Boolean(list.querySelector('.card'))
     }
   }
 
-  function moveGhost(x, y) {
-    drag.ghost.style.transform = `translate(${x - drag.offsetX}px, ${y - drag.offsetY}px)`
-  }
-
-  /** The column nearest the pointer — inside one wins, otherwise the closest. */
-  function nearestColumn(x, y) {
+  /** The drawer nearest the pointer — inside one wins, otherwise the closest. */
+  function nearestDrawer(x, y) {
     let best = null
     let bestDistance = Infinity
 
-    for (const element of root.querySelectorAll('.column')) {
+    for (const element of root.querySelectorAll('.drawer[data-drawer]')) {
       const rect = element.getBoundingClientRect()
       const dx = Math.max(rect.left - x, 0, x - rect.right)
       const dy = Math.max(rect.top - y, 0, y - rect.bottom)
@@ -428,94 +607,44 @@ export function mountBoard(root, boardId) {
         best = element
       }
     }
-
     return best
   }
 
   /** Slot the dragged card into wherever the pointer is hovering. */
-  function placeDragged(x, y) {
-    const column = nearestColumn(x, y)
-    if (!column) return
+  function place(x, y, element) {
+    const drawer = nearestDrawer(x, y)
+    if (!drawer) return
 
-    for (const element of root.querySelectorAll('.column')) {
-      element.classList.toggle('is-dropping', element === column)
+    for (const other of root.querySelectorAll('.drawer')) {
+      other.classList.toggle('is-dropping', other === drawer)
     }
 
-    const list = column.querySelector('.column-cards')
-    const siblings = [...list.querySelectorAll(':scope > .card')].filter((el) => el !== drag.element)
+    const list = drawer.querySelector('.drawer-cards')
+    const siblings = [...list.querySelectorAll(':scope > .card')].filter((el) => el !== element)
 
     const before = siblings.find((el) => {
       const rect = el.getBoundingClientRect()
       return y < rect.top + rect.height / 2
     })
 
-    if (before) list.insertBefore(drag.element, before)
-    else list.appendChild(drag.element)
+    if (before) list.insertBefore(element, before)
+    else list.append(element)
 
     syncEmptyHints()
   }
 
-  function autoScroll(y) {
-    if (y < SCROLL_MARGIN) window.scrollBy(0, -Math.ceil((SCROLL_MARGIN - y) / 3))
-    else if (y > innerHeight - SCROLL_MARGIN) {
-      window.scrollBy(0, Math.ceil((y - (innerHeight - SCROLL_MARGIN)) / 3))
-    }
-  }
-
-  function startDrag() {
-    const element = pending.element
-    const rect = element.getBoundingClientRect()
-
-    // Capture on `root`, not the card: `placeDragged` reparents the card on
-    // every move to reorder it, and Safari silently drops pointer capture
-    // held by a node the instant that node is moved in the DOM — which was
-    // freezing the drag after the very first move.
-    root.setPointerCapture(activePointerId)
-
-    const ghost = element.cloneNode(true)
-    ghost.classList.add('card-ghost')
-    ghost.querySelector('.menu')?.remove()
-    ghost.style.width = `${rect.width}px`
-    document.body.appendChild(ghost)
-
-    drag = {
-      element,
-      ghost,
-      offsetX: pending.x - rect.left,
-      offsetY: pending.y - rect.top,
-    }
-
-    element.classList.add('is-dragging')
-    document.body.classList.add('dragging-card')
-    moveGhost(pending.x, pending.y)
-  }
-
-  function endDrag() {
-    if (!drag) return
-    drag.ghost.remove()
-    drag.element.classList.remove('is-dragging')
-    document.body.classList.remove('dragging-card')
-    for (const element of root.querySelectorAll('.column.is-dropping')) {
-      element.classList.remove('is-dropping')
-    }
-    drag = null
-    lastDragEnd = Date.now()
-  }
-
-  /** Read the columns back out of the DOM and persist whatever shifted. */
+  /** Read the drawers back out of the DOM and persist whatever shifted. */
   async function commitOrder() {
     const byId = new Map(state.cards.map((card) => [card.id, card]))
     const moves = []
 
-    for (const column of root.querySelectorAll('.column')) {
-      const { status } = column.dataset
-      const elements = column.querySelectorAll('.column-cards > .card')
-
-      elements.forEach((element, position) => {
+    for (const drawer of root.querySelectorAll('.drawer[data-drawer]')) {
+      const drawerId = drawer.dataset.drawer
+      drawer.querySelectorAll('.drawer-cards > .card').forEach((element, position) => {
         const card = byId.get(element.dataset.card)
         if (!card) return
-        if (card.status !== status || card.position !== position) {
-          moves.push({ id: card.id, status, position })
+        if (card.drawer_id !== drawerId || card.position !== position) {
+          moves.push({ id: card.id, drawer_id: drawerId, position })
         }
       })
     }
@@ -528,129 +657,172 @@ export function mountBoard(root, boardId) {
     // Optimistic: the cards are already where the eye expects them.
     for (const move of moves) {
       const card = byId.get(move.id)
-      card.status = move.status
+      card.drawer_id = move.drawer_id
       card.position = move.position
     }
     render()
-
-    try {
-      await saveOrder(moves)
-    } catch (error) {
-      if (!alive) return
-      state.status = 'error'
-      state.error = error?.message || 'That move did not save.'
-      render()
-    }
+    await mutateQuietly(() => saveOrder(moves))
   }
 
-  function releasePointer(pointerId) {
-    if (!pending && !drag) return
+  const drag = createDragEngine({
+    root,
+    selector: '.card[data-drag]',
+    // The card's face is a button so it can be reached from the keyboard; a
+    // drag has to be able to start on it all the same. Only the controls down
+    // the side, and the tick box, are off limits.
+    blockSelector:
+      '.card-actions, .card-tick, a, input, textarea, select, [contenteditable], [data-no-drag]',
 
-    root.removeEventListener('pointermove', onPointerMove)
-    root.removeEventListener('pointerup', onPointerUp)
-    root.removeEventListener('pointercancel', onPointerCancel)
-    if (root.hasPointerCapture?.(pointerId)) root.releasePointerCapture(pointerId)
-    pending = null
-    activePointerId = null
-  }
+    scroller: () => root.querySelector('[data-lane]'),
 
-  function onPointerDown(event) {
-    if (drag || pending) return
-    if (event.button !== 0) return
-
-    const element = event.target.closest('.card')
-    if (!element || !root.contains(element) || element.classList.contains('card-skeleton')) return
-
-    const grip = event.target.closest('.card-grip')
-    // Touch and pen drag from the grip only, so the page still scrolls.
-    if (!grip && event.pointerType !== 'mouse') return
-    // A mouse press on the row menu is a click, never a drag.
-    if (!grip && event.target.closest('.menu')) return
-
-    pending = { element, x: event.clientX, y: event.clientY }
-    activePointerId = event.pointerId
-    // Capture is grabbed once a drag actually starts (see `startDrag`), not
-    // here — capturing on every press retargets the plain-tap `click` that
-    // follows to whatever holds capture, which broke opening a card.
-    root.addEventListener('pointermove', onPointerMove)
-    root.addEventListener('pointerup', onPointerUp)
-    root.addEventListener('pointercancel', onPointerCancel)
-  }
-
-  function onPointerMove(event) {
-    if (!drag) {
-      const travelled = Math.hypot(event.clientX - pending.x, event.clientY - pending.y)
-      if (travelled < DRAG_THRESHOLD) return
+    onStart() {
       closeMenus()
-      startDrag()
+      const bar = dropBarElement()
+      if (bar) bar.hidden = false
+    },
+
+    onMove(x, y, element) {
+      const nextZone = zoneAt(x, y)
+      setZone(nextZone)
+      if (nextZone) {
+        considerMerge(null)
+        return
+      }
+
+      const over = cardAt(x, y, element)
+      const merging = over && overMiddle(over, y)
+      considerMerge(merging ? over : null)
+      // Reordering while hovering a merge would slide the target out from
+      // under the finger, so one at a time.
+      if (merging) return
+
+      place(x, y, element)
+    },
+
+    onDrop(element) {
+      const droppedZone = zone
+      const target = mergeTarget
+      const id = element.dataset.card
+
+      finishDrag()
+
+      if (droppedZone === 'delete') mutate(() => trashCard(id))
+      else if (droppedZone === 'archive') mutate(() => archiveCard(id))
+      else if (target) mutate(() => mergeCards(target.dataset.card, id))
+      else commitOrder()
+    },
+
+    onCancel() {
+      finishDrag()
+      // The browser took the gesture back — put the DOM back the way it was.
+      if (alive) render()
+    },
+  })
+
+  function finishDrag() {
+    clearMerge()
+    setZone(null)
+    const bar = dropBarElement()
+    if (bar) bar.hidden = true
+    for (const element of root.querySelectorAll('.drawer.is-dropping')) {
+      element.classList.remove('is-dropping')
     }
-
-    event.preventDefault()
-    moveGhost(event.clientX, event.clientY)
-    placeDragged(event.clientX, event.clientY)
-    autoScroll(event.clientY)
-  }
-
-  function onPointerUp(event) {
-    const dragged = Boolean(drag)
-    endDrag()
-    releasePointer(event.pointerId)
-    if (dragged) commitOrder()
-  }
-
-  function onPointerCancel(event) {
-    const dragged = Boolean(drag)
-    endDrag()
-    releasePointer(event.pointerId)
-    // The browser took the gesture back — put the DOM back the way it was.
-    if (dragged) render()
   }
 
   /* ---------------------------------------------------------------
      Wiring
      --------------------------------------------------------------- */
 
+  function onSubmit(event) {
+    const form = event.target.closest('[data-add-form]')
+    if (!form) return
+    event.preventDefault()
+    const input = form.elements.title
+    const title = input.value
+    input.value = ''
+    onQuickAdd(form.dataset.drawer, title)
+  }
+
   function onClick(event) {
-    // A click fires at the end of a mouse drag; that isn't a tap on the card.
-    if (Date.now() - lastDragEnd < 300) return
+    // A click fires at the end of a drag; that isn't a tap on the card.
+    if (drag.justDragged()) return
 
-    const target = event.target.closest('[data-action]')
+    // A picture inside a folded-out note opens full size; one inside a link
+    // card is the link's own, and follows it.
+    const image = event.target.closest('.card-note img')
+    if (image && !image.closest('a')) {
+      event.preventDefault()
+      openLightbox({ src: image.currentSrc || image.src, alt: image.alt })
+      return
+    }
 
+    const target = event.target.closest('[data-act]')
     if (!target || !root.contains(target)) {
       closeMenus()
       return
     }
 
-    const { action, id, status } = target.dataset
-    if (action !== 'menu') closeMenus()
+    const { act, id, drawer } = target.dataset
+    if (act !== 'menu') closeMenus()
 
-    switch (action) {
+    switch (act) {
       case 'add':
-        onAdd(status)
+        onAddNote(drawer)
         break
-      case 'edit':
-        onEdit(id)
+      case 'open':
+        openCard(cardById(id))
         break
-      case 'delete':
-        onDelete(id)
+      case 'fold':
+        toggleCardOpen(id)
+        render()
+        break
+      case 'tick':
+        onTick(id)
         break
       case 'copy':
         onCopy(id, target)
         break
       case 'move':
-        mutate(() => moveCard(id, boardId, status))
+        onMove(id)
+        break
+      case 'archive':
+        mutate(() => archiveCard(id))
+        break
+      case 'delete':
+        onDelete(id)
         break
       case 'menu':
         toggleMenu(target)
         break
+      case 'drawer-new':
+        onNewDrawer()
+        break
+      case 'drawer-edit':
+        onEditDrawer(drawer)
+        break
+      case 'drawer-left':
+        mutate(() => moveDrawer(state.drawers, drawer, -1))
+        break
+      case 'drawer-right':
+        mutate(() => moveDrawer(state.drawers, drawer, 1))
+        break
+      case 'drawer-delete':
+        onDeleteDrawer(drawer)
+        break
+      case 'board-edit':
+        onEditBoard()
+        break
+      case 'board-archive':
+        onArchiveBoard()
+        break
+      case 'board-delete':
+        onDeleteBoard()
+        break
       case 'back':
-        location.hash = '#/boards'
+        location.hash = '#/'
         break
       case 'retry':
         load()
-        break
-      case 'grip':
-        // Handled by the pointer listeners; a plain tap does nothing.
         break
     }
   }
@@ -659,7 +831,7 @@ export function mountBoard(root, boardId) {
     if (event.key === 'Escape') closeMenus()
   }
 
-  root.addEventListener('pointerdown', onPointerDown)
+  root.addEventListener('submit', onSubmit)
   document.addEventListener('click', onClick)
   document.addEventListener('keydown', onKeydown)
 
@@ -667,9 +839,9 @@ export function mountBoard(root, boardId) {
 
   return function unmount() {
     alive = false
-    endDrag()
-    releasePointer(activePointerId)
-    root.removeEventListener('pointerdown', onPointerDown)
+    clearMerge()
+    drag.destroy()
+    root.removeEventListener('submit', onSubmit)
     document.removeEventListener('click', onClick)
     document.removeEventListener('keydown', onKeydown)
   }

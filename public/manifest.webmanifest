@@ -19,7 +19,7 @@
     {
       "name": "New note",
       "short_name": "New note",
-      "description": "Capture a note straight into the Inbox. Long-press shortcuts aren't supported on iOS, so this only shows up on Android.",
+      "description": "Capture a note straight into Quick notes. Long-press shortcuts aren't supported on iOS, so this only shows up on Android.",
       "url": "./#/new",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }

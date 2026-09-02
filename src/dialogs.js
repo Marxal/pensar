@@ -1,11 +1,15 @@
-// Promise-based modals: a single-field text prompt, a confirm, and the card editor.
-// Plain divs rather than <dialog> so older iOS Safari is covered too.
+// Promise-based modals: a single-field prompt, a confirm, the drawer settings,
+// the board's looks, and the "move this somewhere else" picker.
+//
+// Plain divs rather than <dialog> so older iOS Safari is covered too. The note
+// editor is deliberately not here — a note is a page, not a dialog, and it
+// lives in noteEditor.js.
 
 import { escapeHtml } from './format'
-import { PRIORITY_LABELS, STATUSES, STATUS_LABELS, setCardCover } from './cards'
-import { renderMarkdown, markdownFromHtml } from './markdown'
-import { fetchLinkPreview } from './linkPreview'
-import { uploadCoverImage, removeCoverImage, signCoverImages, looksLikeImage, MAX_INPUT_BYTES } from './images'
+import { DRAWER_KINDS, DRAWER_KIND_LABELS, DRAWER_KIND_HINTS } from './drawers'
+import { BOARD_COLOURS, BOARD_EMOJI, boardColour } from './boardStyle'
+import { uploadBoardIcon, removeImage, signImage } from './images'
+import { setBoardStyle } from './boards'
 
 /**
  * Mount a modal and resolve with whatever `finish` is called with.
@@ -19,7 +23,7 @@ function openModal({ build, wire, wide = false }) {
     backdrop.className = 'modal-backdrop'
     backdrop.innerHTML = `<div class="modal${wide ? ' modal-wide' : ''}" role="dialog" aria-modal="true">${build()}</div>`
     document.body.appendChild(backdrop)
-    document.body.classList.add('modal-open')
+    document.body.classList.add('has-overlay')
 
     let done = false
     function finish(value) {
@@ -27,7 +31,9 @@ function openModal({ build, wire, wide = false }) {
       done = true
       document.removeEventListener('keydown', onKeydown, true)
       backdrop.remove()
-      document.body.classList.remove('modal-open')
+      if (!document.querySelector('.lightbox, .sheet, .modal-backdrop')) {
+        document.body.classList.remove('has-overlay')
+      }
       if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
       resolve(value)
     }
@@ -45,61 +51,6 @@ function openModal({ build, wire, wide = false }) {
     })
 
     wire(backdrop.querySelector('.modal'), finish)
-  })
-}
-
-/**
- * Ask for a line of text. Resolves with the trimmed value, or null if dismissed.
- * Empty input is refused rather than resolved.
- */
-export function openPrompt({
-  title,
-  label = 'Name',
-  value = '',
-  placeholder = '',
-  confirmLabel = 'Save',
-}) {
-  return openModal({
-    build: () => `
-      <h2 class="modal-title">${escapeHtml(title)}</h2>
-      <form class="modal-form" novalidate>
-        <label class="field">
-          <span class="field-label">${escapeHtml(label)}</span>
-          <input
-            class="field-input"
-            name="value"
-            type="text"
-            autocomplete="off"
-            maxlength="80"
-            placeholder="${escapeHtml(placeholder)}"
-            value="${escapeHtml(value)}"
-          />
-        </label>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-          <button type="submit" class="btn btn-primary">${escapeHtml(confirmLabel)}</button>
-        </div>
-      </form>
-    `,
-    wire: (modal, finish) => {
-      const form = modal.querySelector('form')
-      const input = modal.querySelector('.field-input')
-
-      form.addEventListener('submit', (event) => {
-        event.preventDefault()
-        const next = input.value.trim()
-        if (!next) {
-          input.focus()
-          return
-        }
-        finish(next)
-      })
-
-      modal.querySelector('[data-close]').addEventListener('click', () => finish(null))
-
-      input.focus()
-      input.select()
-    },
   })
 }
 
@@ -131,475 +82,321 @@ export function openConfirm({
   }).then((result) => result === true)
 }
 
-/**
- * Pick a board and column for an inbox card. Resolves with `{ boardId, status }`,
- * `{ newBoard: true }` if there are no boards to pick from and the user wants
- * to make one, or null if dismissed.
- */
-export function openBoardPicker({ boards }) {
-  return openModal({
-    build: () =>
-      boards.length
-        ? `
-          <h2 class="modal-title">Assign to board</h2>
-          <div class="picker-list">
-            ${boards
-              .map(
-                (board) => `
-                  <div class="picker-row">
-                    <span class="picker-row-name">${escapeHtml(board.name)}</span>
-                    <div class="picker-row-actions">
-                      ${STATUSES.map(
-                        (status) =>
-                          `<button type="button" class="btn btn-ghost btn-sm" data-board="${board.id}" data-status="${status}">${STATUS_LABELS[status]}</button>`
-                      ).join('')}
-                    </div>
-                  </div>
-                `
-              )
-              .join('')}
-          </div>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-          </div>
-        `
-        : `
-          <h2 class="modal-title">Assign to board</h2>
-          <p class="modal-message">You don't have any boards yet — create one first.</p>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-            <button type="button" class="btn btn-primary" data-new-board>New board</button>
-          </div>
-        `,
-    wire: (modal, finish) => {
-      modal.querySelector('[data-close]').addEventListener('click', () => finish(null))
-      modal.querySelector('[data-new-board]')?.addEventListener('click', () => finish({ newBoard: true }))
-      modal.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-board]')
-        if (!button) return
-        finish({ boardId: button.dataset.board, status: button.dataset.status })
-      })
-    },
-  })
-}
+/* ---------------------------------------------------------------
+   Drawers
+   --------------------------------------------------------------- */
 
 /**
- * Insert a link at the current selection inside the note editor — the
- * selected text becomes the link text, or the URL itself if nothing was
- * selected. Returns the new <a>, or null if the prompt was cancelled or
- * there was nowhere sensible to put it.
+ * Name a drawer and say what shape it is. Resolves with `{ name, kind }`, or
+ * null if dismissed.
  */
-function insertLink(editor) {
-  const selection = window.getSelection()
-  if (!selection.rangeCount || !editor.contains(selection.anchorNode)) {
-    const range = document.createRange()
-    range.selectNodeContents(editor)
-    range.collapse(false)
-    selection.removeAllRanges()
-    selection.addRange(range)
-  }
-
-  // window.prompt is synchronous but still risks the selection collapsing
-  // (Safari especially), so it's saved before and restored after.
-  const savedRange = selection.getRangeAt(0).cloneRange()
-  const url = window.prompt('Link URL', 'https://')
-  if (!url) return null
-
-  selection.removeAllRanges()
-  selection.addRange(savedRange)
-  const range = selection.getRangeAt(0)
-
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.textContent = range.collapsed ? url : range.toString()
-  range.deleteContents()
-  range.insertNode(anchor)
-
-  range.setStartAfter(anchor)
-  range.collapse(true)
-  selection.removeAllRanges()
-  selection.addRange(range)
-
-  return anchor
-}
-
-/**
- * Turn a link-preview anchor into a small card with a remove button, so a
- * fresh preview and one hydrated back from saved markdown look and behave
- * the same way. Safe to call more than once — already-decorated anchors
- * are left alone.
- */
-function decorateLinkPreview(anchor) {
-  if (anchor.classList.contains('editor-link-preview')) return
-  anchor.classList.add('editor-link-preview')
-  anchor.contentEditable = 'false'
-  anchor.target = '_blank'
-  anchor.rel = 'noopener noreferrer'
-
-  const remove = document.createElement('button')
-  remove.type = 'button'
-  remove.className = 'editor-link-preview-remove'
-  remove.setAttribute('aria-label', 'Remove preview image')
-  remove.title = 'Remove preview image'
-  remove.textContent = '×'
-  remove.addEventListener('click', (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    anchor.remove()
-  })
-  anchor.appendChild(remove)
-}
-
-/**
- * Find every link-preview-shaped anchor in the editor — one whose only
- * content is an image — and make sure it's decorated. Run once right after
- * hydrating a saved note, since the markdown round-trip doesn't carry the
- * `editor-link-preview` class itself.
- */
-function decorateAllLinkPreviews(editor) {
-  editor.querySelectorAll('a').forEach((anchor) => {
-    if (anchor.children.length === 1 && anchor.firstElementChild.tagName === 'IMG') {
-      decorateLinkPreview(anchor)
-    }
-  })
-}
-
-/**
- * Fetch the link's Open Graph image and drop it right after `anchor`, as
- * its own small link-card thumbnail. Silent no-op if the page has no
- * image, the fetch fails, or the editor/anchor is gone by the time it
- * resolves.
- */
-async function attachLinkPreview(editor, anchor, url) {
-  const preview = await fetchLinkPreview(url)
-  if (!preview?.image || !editor.isConnected || !editor.contains(anchor)) return
-
-  const wrap = document.createElement('a')
-  wrap.href = url
-  const img = document.createElement('img')
-  img.src = preview.image
-  img.alt = preview.title || ''
-  wrap.appendChild(img)
-  decorateLinkPreview(wrap)
-
-  anchor.insertAdjacentElement('afterend', wrap)
-  wrap.insertAdjacentHTML('afterend', '<br>')
-}
-
-/**
- * The note's markdown, without the remove buttons the editor adds to
- * link-preview cards — those are an editing affordance only, never
- * something that should end up in body_markdown.
- */
-function cleanedEditorHtml(editor) {
-  const clone = editor.cloneNode(true)
-  clone.querySelectorAll('.editor-link-preview-remove').forEach((button) => button.remove())
-  return clone.innerHTML
-}
-
-/**
- * Wire the cover-image drop zone: click-to-browse, drag-and-drop, paste
- * anywhere in the modal, and a remove button. A no-op when the modal has no
- * `[data-cover-drop]` — new cards don't get one; see `openCardEditor`.
- *
- * The `paste` listener sits on the modal rather than the drop zone because a
- * paste has no drop location — and it only ever intercepts an image. A text
- * paste still falls through untouched, including into the note editor.
- */
-function wireCoverImage(modal, card, onCoverChange) {
-  const drop = modal.querySelector('[data-cover-drop]')
-  if (!drop) return
-
-  const input = modal.querySelector('[data-cover-input]')
-  const preview = modal.querySelector('[data-cover-preview]')
-  const hint = modal.querySelector('[data-cover-hint]')
-  const remove = modal.querySelector('[data-cover-remove]')
-  const status = modal.querySelector('[data-cover-status]')
-
-  let path = card.cover_image_url ?? null
-  let busy = false
-
-  function setStatus(text) {
-    status.hidden = !text
-    status.textContent = text ?? ''
-  }
-
-  function showCover(url) {
-    preview.src = url
-    preview.hidden = false
-    hint.hidden = true
-    remove.hidden = false
-  }
-
-  function showEmpty() {
-    preview.hidden = true
-    preview.removeAttribute('src')
-    hint.hidden = false
-    remove.hidden = true
-  }
-
-  // Hydrate an existing cover — signing is async, so it starts blank and
-  // fills in once the link comes back.
-  if (path) {
-    signCoverImages([path]).then((links) => {
-      const url = links.get(path)
-      if (url) showCover(url)
-    })
-  }
-
-  async function handleFile(file) {
-    if (busy) return
-    if (!looksLikeImage(file.type)) {
-      setStatus("That doesn't look like an image.")
-      return
-    }
-    if (file.size > MAX_INPUT_BYTES) {
-      setStatus('That image is too large.')
-      return
-    }
-
-    busy = true
-    setStatus('Uploading…')
-    try {
-      const uploaded = await uploadCoverImage(card.id, file)
-      await setCardCover(card.id, uploaded)
-      path = uploaded
-      const links = await signCoverImages([path])
-      const url = links.get(path)
-      setStatus(null)
-      if (url) showCover(url)
-      onCoverChange?.()
-    } catch (error) {
-      setStatus(error?.message || 'That upload did not go through.')
-    }
-    busy = false
-  }
-
-  drop.addEventListener('click', () => input.click())
-  drop.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      input.click()
-    }
-  })
-
-  input.addEventListener('change', () => {
-    const file = input.files[0]
-    input.value = ''
-    if (file) handleFile(file)
-  })
-
-  drop.addEventListener('dragover', (event) => {
-    event.preventDefault()
-    drop.classList.add('is-dragover')
-  })
-  drop.addEventListener('dragleave', () => drop.classList.remove('is-dragover'))
-  drop.addEventListener('drop', (event) => {
-    event.preventDefault()
-    drop.classList.remove('is-dragover')
-    const file = event.dataTransfer.files[0]
-    if (file) handleFile(file)
-  })
-
-  // A drop anywhere else in the modal would otherwise fall through to the
-  // browser's default — opening the file — and navigate away from the app.
-  modal.addEventListener('dragover', (event) => event.preventDefault())
-  modal.addEventListener('drop', (event) => event.preventDefault())
-
-  remove.addEventListener('click', async (event) => {
-    event.stopPropagation() // the remove button sits inside the drop zone's own click target
-    if (busy) return
-    busy = true
-
-    const removedPath = path
-    path = null
-    showEmpty()
-    setStatus(null)
-    try {
-      await setCardCover(card.id, null)
-      await removeCoverImage(removedPath)
-      onCoverChange?.()
-    } catch (error) {
-      setStatus(error?.message || 'That did not go through.')
-    }
-    busy = false
-  })
-
-  modal.addEventListener('paste', (event) => {
-    const file = [...(event.clipboardData?.files ?? [])].find((f) => looksLikeImage(f.type))
-    if (!file) return
-    event.preventDefault()
-    handleFile(file)
-  })
-}
-
-/**
- * Card editor: title, note, due date, priority. The note editor is
- * WYSIWYG — it shows formatted text directly, no markdown source or
- * preview toggle. Pasting a link fetches and shows its preview image.
- *
- * Resolves with `{ title, body_markdown, due_date, priority }`, or null if
- * dismissed. Pass `card` to edit an existing one. Title is optional — a
- * note just needs *something*, in the title or the body.
- *
- * The cover image (existing cards only — a new one has no id to upload
- * against yet) saves itself the moment it's picked, independent of the
- * form's Save button, same as niu's avatar picker. `onCoverChange` fires
- * right after each successful upload/remove so the board underneath — which
- * lives outside this modal in the DOM — can refresh its thumbnail live.
- */
-export function openCardEditor({ card = null, columnLabel = '', onCoverChange } = {}) {
-  const editing = Boolean(card)
-
-  const priorityOptions = ['', ...Object.keys(PRIORITY_LABELS)]
-    .map((value) => {
-      const selected = (card?.priority ?? '') === value ? ' selected' : ''
-      const label = value ? PRIORITY_LABELS[value] : 'None'
-      return `<option value="${value}"${selected}>${label}</option>`
-    })
-    .join('')
+export function openDrawerDialog({ drawer = null } = {}) {
+  const editing = Boolean(drawer)
 
   return openModal({
-    wide: true,
     build: () => `
-      <h2 class="modal-title">${editing ? 'Edit card' : 'New card'}</h2>
-      ${columnLabel ? `<p class="modal-message">In ${escapeHtml(columnLabel)}</p>` : ''}
+      <h2 class="modal-title">${editing ? 'Edit drawer' : 'New drawer'}</h2>
       <form class="modal-form" novalidate>
         <label class="field">
-          <span class="field-label">Title</span>
+          <span class="field-label">Name</span>
           <input
             class="field-input"
-            name="title"
+            name="name"
             type="text"
             autocomplete="off"
-            maxlength="200"
-            placeholder="Something to do (optional)"
-            value="${escapeHtml(card?.title ?? '')}"
+            maxlength="40"
+            placeholder="Reading"
+            value="${escapeHtml(drawer?.name ?? '')}"
           />
         </label>
 
-        ${
-          editing
-            ? `
-          <div class="field">
-            <span class="field-label">Cover image</span>
-            <div class="cover-drop" data-cover-drop tabindex="0" role="button" aria-label="Add a cover image">
-              <img class="cover-preview" data-cover-preview alt="" hidden>
-              <p class="cover-hint" data-cover-hint>Drag an image here, paste, or click to choose one</p>
-              <button type="button" class="cover-remove" data-cover-remove aria-label="Remove cover image" title="Remove cover image" hidden>×</button>
-              <p class="cover-status" data-cover-status hidden></p>
-            </div>
-            <input type="file" accept="image/*" class="cover-input" data-cover-input hidden>
-          </div>
-        `
-            : ''
-        }
-
         <div class="field">
-          <span class="field-label">Note</span>
-          <div class="editor-toolbar">
-            <button type="button" class="editor-tool" data-action="bold" title="Bold" aria-label="Bold"><strong>B</strong></button>
-            <button type="button" class="editor-tool" data-action="italic" title="Italic" aria-label="Italic"><em>I</em></button>
-            <button type="button" class="editor-tool" data-action="list" title="Bulleted list" aria-label="Bulleted list">&bull; list</button>
-            <button type="button" class="editor-tool" data-action="link" title="Link" aria-label="Link">link</button>
+          <span class="field-label">Shape</span>
+          <div class="kind-list">
+            ${DRAWER_KINDS.map(
+              (kind) => `
+                <label class="kind-option">
+                  <input type="radio" name="kind" value="${kind}"${
+                    (drawer?.kind ?? 'notes') === kind ? ' checked' : ''
+                  }>
+                  <span class="kind-option-text">
+                    <span class="kind-option-name">${DRAWER_KIND_LABELS[kind]}</span>
+                    <span class="kind-option-hint">${DRAWER_KIND_HINTS[kind]}</span>
+                  </span>
+                </label>
+              `
+            ).join('')}
           </div>
-          <div
-            class="field-input editor-body markdown-body"
-            contenteditable="true"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Note"
-            data-placeholder="Write it straight — no markdown needed"
-          >${card?.body_markdown ? renderMarkdown(card.body_markdown) : ''}</div>
-        </div>
-
-        <div class="field-row">
-          <label class="field">
-            <span class="field-label">Due date</span>
-            <input class="field-input" name="due" type="date" value="${escapeHtml(card?.due_date ?? '')}" />
-          </label>
-          <label class="field">
-            <span class="field-label">Priority</span>
-            <select class="field-input" name="priority">${priorityOptions}</select>
-          </label>
         </div>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Add card'}</button>
+          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Add drawer'}</button>
         </div>
       </form>
     `,
     wire: (modal, finish) => {
       const form = modal.querySelector('form')
-      const title = form.elements.title
-      const editor = modal.querySelector('.editor-body')
-      const toolbar = modal.querySelector('.editor-toolbar')
+      const name = form.elements.name
 
-      wireCoverImage(modal, card, onCoverChange)
-
-      function syncEmptyState() {
-        editor.classList.toggle('is-empty', !editor.textContent.trim())
-      }
-      decorateAllLinkPreviews(editor)
-      syncEmptyState()
-      editor.addEventListener('input', syncEmptyState)
-
-      // Prevents the toolbar button from stealing focus on mousedown, which
-      // would collapse the selection the click handler needs to act on.
-      toolbar.addEventListener('mousedown', (event) => {
-        if (event.target.closest('[data-action]')) event.preventDefault()
+      form.addEventListener('submit', (event) => {
+        event.preventDefault()
+        if (!name.value.trim()) {
+          name.focus()
+          return
+        }
+        finish({ name: name.value.trim(), kind: form.elements.kind.value })
       })
 
-      toolbar.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-action]')
-        if (!button) return
+      modal.querySelector('[data-close]').addEventListener('click', () => finish(null))
+      name.focus()
+      name.select()
+    },
+  })
+}
 
-        switch (button.dataset.action) {
-          case 'bold':
-            document.execCommand('bold')
-            break
-          case 'italic':
-            document.execCommand('italic')
-            break
-          case 'list':
-            document.execCommand('insertUnorderedList')
-            break
-          case 'link': {
-            const anchor = insertLink(editor)
-            if (anchor) attachLinkPreview(editor, anchor, anchor.href)
-            break
+/* ---------------------------------------------------------------
+   Boards
+   --------------------------------------------------------------- */
+
+/**
+ * Name a board and dress it: a colour, and an icon that's either an emoji or a
+ * picture. Resolves with `{ name, colour, emoji }`, or null if dismissed.
+ *
+ * The picture is the odd one out — it uploads and saves the moment it's picked,
+ * the way a card's cover does, because it needs a board id to be stored
+ * against. That's also why it's only offered for a board that already exists.
+ */
+export function openBoardDialog({ board = null } = {}) {
+  const editing = Boolean(board)
+
+  return openModal({
+    build: () => `
+      <h2 class="modal-title">${editing ? 'Board' : 'New board'}</h2>
+      <form class="modal-form" novalidate>
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input
+            class="field-input"
+            name="name"
+            type="text"
+            autocomplete="off"
+            maxlength="40"
+            placeholder="Reading list"
+            value="${escapeHtml(board?.name ?? '')}"
+          />
+        </label>
+
+        <div class="field">
+          <span class="field-label">Colour</span>
+          <div class="swatch-row" data-colours>
+            ${BOARD_COLOURS.map(
+              ({ key, label }) => `
+                <button
+                  type="button"
+                  class="swatch"
+                  data-colour="${key}"
+                  data-tint="${key}"
+                  aria-pressed="${String(boardColour(board) === key)}"
+                  aria-label="${label}"
+                  title="${label}"
+                ></button>
+              `
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Icon</span>
+          <div class="icon-picked" data-icon-preview data-tint="${boardColour(board)}">
+            <img data-icon-image alt="" hidden>
+            <span data-icon-emoji>${escapeHtml(board?.emoji ?? '')}</span>
+          </div>
+          <div class="emoji-row" data-emoji>
+            <button type="button" class="emoji-btn" data-emoji-value="" title="No icon" aria-label="No icon">—</button>
+            ${BOARD_EMOJI.map(
+              (emoji) =>
+                `<button type="button" class="emoji-btn" data-emoji-value="${emoji}" aria-label="${emoji}">${emoji}</button>`
+            ).join('')}
+          </div>
+          ${
+            editing
+              ? `<div class="icon-file">
+                   <button type="button" class="btn btn-ghost btn-sm" data-icon-pick>Use a picture…</button>
+                   <button type="button" class="btn btn-ghost btn-sm menu-danger" data-icon-drop hidden>Remove picture</button>
+                   <span class="icon-file-status" data-icon-status hidden></span>
+                   <input type="file" accept="image/*" data-icon-input hidden>
+                 </div>`
+              : `<p class="field-hint">A picture can go on once the board exists.</p>`
           }
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Create board'}</button>
+        </div>
+      </form>
+    `,
+    wire: (modal, finish) => {
+      const form = modal.querySelector('form')
+      const name = form.elements.name
+      const preview = modal.querySelector('[data-icon-preview]')
+      const previewImage = modal.querySelector('[data-icon-image]')
+      const previewEmoji = modal.querySelector('[data-icon-emoji]')
+      const status = modal.querySelector('[data-icon-status]')
+      const dropButton = modal.querySelector('[data-icon-drop]')
+
+      let colour = boardColour(board)
+      let emoji = board?.emoji ?? ''
+      let iconPath = board?.icon_path ?? null
+
+      function paint() {
+        for (const swatch of modal.querySelectorAll('[data-colour]')) {
+          swatch.setAttribute('aria-pressed', String(swatch.dataset.colour === colour))
         }
-        syncEmptyState()
+        for (const button of modal.querySelectorAll('[data-emoji-value]')) {
+          button.classList.toggle(
+            'is-picked',
+            !iconPath && button.dataset.emojiValue === emoji
+          )
+        }
+        preview.dataset.tint = colour
+        previewEmoji.textContent = iconPath ? '' : emoji
+        previewImage.hidden = !iconPath
+        if (dropButton) dropButton.hidden = !iconPath
+      }
+
+      async function showIcon() {
+        if (!iconPath) return
+        const url = await signImage(iconPath)
+        if (url) previewImage.src = url
+      }
+
+      paint()
+      showIcon()
+
+      modal.querySelector('[data-colours]').addEventListener('click', (event) => {
+        const swatch = event.target.closest('[data-colour]')
+        if (!swatch) return
+        colour = swatch.dataset.colour
+        paint()
+      })
+
+      modal.querySelector('[data-emoji]').addEventListener('click', (event) => {
+        const button = event.target.closest('[data-emoji-value]')
+        if (!button) return
+        emoji = button.dataset.emojiValue
+        // An emoji and a picture are two answers to the same question.
+        if (emoji) iconPath = null
+        paint()
+      })
+
+      const iconInput = modal.querySelector('[data-icon-input]')
+      modal.querySelector('[data-icon-pick]')?.addEventListener('click', () => iconInput.click())
+
+      iconInput?.addEventListener('change', async () => {
+        const file = iconInput.files[0]
+        iconInput.value = ''
+        if (!file) return
+
+        status.hidden = false
+        status.textContent = 'Uploading…'
+        try {
+          iconPath = await uploadBoardIcon(board.id, file)
+          await setBoardStyle(board.id, { icon_path: iconPath })
+          emoji = ''
+          status.hidden = true
+          paint()
+          await showIcon()
+        } catch (error) {
+          status.textContent = error?.message || 'That upload did not go through.'
+        }
+      })
+
+      dropButton?.addEventListener('click', async () => {
+        const dropped = iconPath
+        try {
+          await setBoardStyle(board.id, { icon_path: null })
+          iconPath = null
+          previewImage.removeAttribute('src')
+          paint()
+          await removeImage(dropped)
+        } catch (error) {
+          status.hidden = false
+          status.textContent = error?.message || 'That did not go through.'
+        }
       })
 
       form.addEventListener('submit', (event) => {
         event.preventDefault()
-        const hasTitle = Boolean(title.value.trim())
-        const hasBody = Boolean(editor.textContent.trim())
-        if (!hasTitle && !hasBody) {
-          editor.focus()
+        if (!name.value.trim()) {
+          name.focus()
           return
         }
-        finish({
-          title: title.value.trim(),
-          body_markdown: markdownFromHtml(cleanedEditorHtml(editor)),
-          due_date: form.elements.due.value || null,
-          priority: form.elements.priority.value || null,
-        })
+        finish({ name: name.value.trim(), colour, emoji: emoji || null })
       })
 
       modal.querySelector('[data-close]').addEventListener('click', () => finish(null))
+      name.focus()
+      name.select()
+    },
+  })
+}
 
-      // Editing leads with the title, since there's usually one already;
-      // a new card leads with the note, since a title isn't required.
-      if (editing) {
-        title.focus()
-        title.select()
-      } else {
-        editor.focus()
-      }
+/* ---------------------------------------------------------------
+   Moving a card
+   --------------------------------------------------------------- */
+
+/**
+ * Pick where a card should go: Quick notes, or any drawer on any board.
+ * Resolves with `{ drawerId }` — null meaning Quick notes — or null if
+ * dismissed. The card's current home is shown but not offered.
+ */
+export function openMovePicker({ boards, drawers, currentDrawerId = null }) {
+  const byBoard = new Map()
+  for (const drawer of drawers) {
+    if (!byBoard.has(drawer.board_id)) byBoard.set(drawer.board_id, [])
+    byBoard.get(drawer.board_id).push(drawer)
+  }
+
+  function row(label, drawerId, current) {
+    if (current) {
+      return `<span class="picker-row picker-row-current">${escapeHtml(label)} <em>here now</em></span>`
+    }
+    return `<button type="button" class="picker-row" data-drawer="${drawerId ?? ''}">${escapeHtml(label)}</button>`
+  }
+
+  return openModal({
+    build: () => `
+      <h2 class="modal-title">Move to</h2>
+      <div class="picker-list">
+        ${row('Quick notes', null, currentDrawerId === null)}
+        ${boards
+          .map((board) => {
+            const inside = byBoard.get(board.id) ?? []
+            if (!inside.length) return ''
+            return `
+              <div class="picker-group">
+                <p class="picker-group-name">${escapeHtml(board.name)}</p>
+                ${inside
+                  .map((drawer) => row(drawer.name, drawer.id, drawer.id === currentDrawerId))
+                  .join('')}
+              </div>
+            `
+          })
+          .join('')}
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      </div>
+    `,
+    wire: (modal, finish) => {
+      modal.querySelector('[data-close]').addEventListener('click', () => finish(null))
+      modal.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-drawer]')
+        if (!button) return
+        finish({ drawerId: button.dataset.drawer || null })
+      })
     },
   })
 }

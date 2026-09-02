@@ -6,11 +6,11 @@ Personal task & note app. Single user (you). Boards with kanban cards, a quick-c
 
 - **Data:** new tables in niu's existing Supabase project, prefixed `pensar_` so nothing collides with niu's own tables.
 - **Hosting:** GitHub Pages, same as Obertura. A static site talking to Supabase directly needs no server.
-- **Boards:** fixed kanban columns per board — To do / Doing / Done. Custom column names aren't in v1; each board is a self-contained set of cards, not shared across boards.
-- **Notes:** markdown body, one cover image per card, due date, priority tag. No checklists in v1.
+- **Boards:** ~~fixed kanban columns per board — To do / Doing / Done~~ → **drawers**, named and shaped by you (tick list / notes / gallery). A board starts with one and you add more. Each board is still a self-contained set of cards, not shared across boards.
+- **Notes:** markdown body, ~~one cover image per card~~ → as many pictures as you drop in, due date, priority tag. No checklists inside a card.
 - **Copy button:** copies the note as markdown.
-- **Images:** uploaded to Supabase Storage, paste-from-clipboard supported, one cover image per card.
-- **Inbox:** the home screen. Swipe to assign/archive/delete on mobile; tap-based on desktop.
+- **Images:** uploaded to Supabase Storage, paste-from-clipboard supported, dropped straight into the note.
+- **Inbox:** ~~the home screen~~ → **quick notes and projects share the home screen**, so a note is filed by dragging it onto a project. Swipe gestures gave way to press-and-hold dragging.
 - **Search:** instant, client-side, titles + body, everywhere at once.
 - **Archive:** auto-clears after 90 days. **Trash:** recoverable, then gone — I'm proposing 30 days before permanent deletion; flag if you want a different window.
 - **Sync:** Supabase Realtime, changes appear on your other device within a second or two. No offline mode needed.
@@ -24,14 +24,31 @@ Personal task & note app. Single user (you). Boards with kanban cards, a quick-c
 
 ## Data model
 
+> Revised on 1 Sep 2026 by the `20260901230500_pensar_drawers_and_board_style` migration, which replaced the fixed To do / Doing / Done columns with user-made drawers, gave boards a colour and an icon, and folded each card's cover picture into its note. The tables below are what exists now; the migration file explains why each change was made.
+
 **pensar_boards**
 | column | type | notes |
 |---|---|---|
 | id | uuid | |
 | user_id | uuid | scopes rows to you via RLS |
 | name | text | |
+| colour | text | a palette key from `src/boardStyle.js`, not a CSS value |
+| emoji | text, nullable | the cheap icon |
+| icon_path | text, nullable | an uploaded picture in the bucket; beats the emoji |
 | position | int | display order |
 | archived_at | timestamptz, nullable | |
+| deleted_at | timestamptz, nullable | trash |
+| created_at | timestamptz | |
+
+**pensar_drawers** — a board's columns, named and shaped by you
+| column | type | notes |
+|---|---|---|
+| id | uuid | |
+| user_id | uuid | |
+| board_id | uuid | cascades on board delete |
+| name | text | |
+| kind | text | `list` (tick boxes) / `notes` / `gallery` — how its cards are drawn |
+| position | int | left-to-right order |
 | created_at | timestamptz | |
 
 **pensar_cards**
@@ -39,19 +56,19 @@ Personal task & note app. Single user (you). Boards with kanban cards, a quick-c
 |---|---|---|
 | id | uuid | |
 | user_id | uuid | |
-| board_id | uuid, nullable | null = sits in the Inbox |
-| status | text | `todo` / `doing` / `done`, ignored while board_id is null |
-| position | int | order within a column |
+| drawer_id | uuid, nullable | **the card's placement.** null = a quick note on the home screen |
+| board_id | uuid, nullable | derived from the drawer by trigger — never written by the app |
+| position | int | order within a drawer |
 | title | text | |
-| body_markdown | text | |
-| cover_image_url | text, nullable | |
+| body_markdown | text | pictures live in here, as `![](pensar-image/<path>)` |
 | due_date | date, nullable | |
 | priority | text, nullable | `low` / `medium` / `high` |
+| done | boolean | the tick box, which only a `list` drawer shows |
 | archived_at | timestamptz, nullable | |
 | deleted_at | timestamptz, nullable | trash |
 | created_at / updated_at | timestamptz | |
 
-**Storage:** a `pensar-images` bucket, one object per card cover image.
+**Storage:** a `pensar-images` bucket. Every object is `<user_id>/…`, which is the security model rather than a convention — `n/` holds note pictures, `b/` holds board icons.
 
 **RLS:** every table scoped to `auth.uid() = user_id`, set automatically on insert. You're the only user today, but this keeps the door open and keeps pensar's rows cleanly separated from niu's inside the same project.
 
