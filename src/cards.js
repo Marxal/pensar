@@ -113,9 +113,15 @@ export async function createCard(drawerId, fields = {}) {
   return data
 }
 
-/** Quick capture: a line of text, straight into Quick notes. */
-export async function createQuickNote(title) {
-  return createCard(null, { title })
+/**
+ * Quick capture: a line of text, straight into Quick notes.
+ *
+ * The line becomes the note, not a title for one. A title is for a long note
+ * that needs a heading to stay scannable — putting a captured line there as
+ * well would mean it appearing twice in anything that shows both.
+ */
+export async function createQuickNote(text) {
+  return createCard(null, { body_markdown: text })
 }
 
 export async function updateCard(id, fields) {
@@ -155,6 +161,46 @@ export async function archiveCard(id) {
     .eq('id', id)
 
   if (error) throw error
+}
+
+/** Put an archived card back where it was. This is what Undo calls. */
+export async function unarchiveCard(id) {
+  const { error } = await supabase.from('pensar_cards').update({ archived_at: null }).eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * Trash every live card sitting in a drawer, in one statement — what deleting
+ * a drawer does to its contents (see `deleteDrawer`). Archived cards are left
+ * alone: they already left the board on their own terms.
+ */
+export async function trashCardsInDrawer(drawerId) {
+  const { error } = await supabase
+    .from('pensar_cards')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('drawer_id', drawerId)
+    .is('deleted_at', null)
+
+  if (error) throw error
+}
+
+/**
+ * Pull cards back out of the trash and put them somewhere — `moves` is
+ * `[{ id, drawer_id, position }]`. Undoing a drawer delete uses this to land
+ * its cards back in the drawer it just re-made, in the order they were in.
+ */
+export async function restoreCards(moves) {
+  const results = await Promise.all(
+    moves.map(({ id, drawer_id, position }) =>
+      supabase
+        .from('pensar_cards')
+        .update({ deleted_at: null, drawer_id: drawer_id ?? null, position })
+        .eq('id', id)
+    )
+  )
+
+  const failed = results.find((result) => result.error)
+  if (failed) throw failed.error
 }
 
 /** Delete a card outright, skipping the trash. Only used to tidy away a note
@@ -249,8 +295,10 @@ function soonerDate(a, b) {
  * nothing is lost silently.
  *
  * The source is trashed rather than deleted, which is what makes this safe to
- * do on a gesture: an accidental merge is one trip to the trash away from
- * being undone.
+ * do on a gesture — and what lets the whole thing be undone: putting the
+ * target's old fields back and lifting the source out of the trash restores
+ * both cards exactly. That pair comes back as `{ target, sourceId }`, which is
+ * what `undoMerge` wants.
  */
 export async function mergeCards(targetId, sourceId) {
   const { data, error } = await supabase
@@ -275,6 +323,13 @@ export async function mergeCards(targetId, sourceId) {
     .filter(Boolean)
     .join('\n\n')
 
+  const before = {
+    title: target.title,
+    body_markdown: target.body_markdown,
+    due_date: target.due_date ?? null,
+    priority: target.priority ?? null,
+  }
+
   await updateCard(targetId, {
     title: target.title.trim() || sourceTitle,
     body_markdown: body,
@@ -283,4 +338,12 @@ export async function mergeCards(targetId, sourceId) {
   })
 
   await trashCard(sourceId)
+
+  return { targetId, sourceId, target: before, sourceTitle: sourceTitle || null }
+}
+
+/** Take a merge back apart, from whatever `mergeCards` handed back. */
+export async function undoMerge({ targetId, sourceId, target }) {
+  await updateCard(targetId, target)
+  await restoreCard(sourceId)
 }

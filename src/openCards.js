@@ -1,42 +1,49 @@
 // Which cards are folded out, remembered between renders and between visits.
 //
-// A card that was open when you left a board should still be open when you
-// come back — this is the sort of thing that only becomes annoying when it
-// doesn't happen. Kept in localStorage rather than the database because it's
-// about this device's screen, not about the note.
+// Only *decisions* live here. A card you have never folded either way isn't in
+// the list at all, and the view works out how it should start — see
+// `cardStartsOpen` in cardTile.js, which shows a note by default and only
+// folds the ones big enough to be in the way. So the three states are: you
+// opened it, you closed it, or you haven't said.
+//
+// Kept in localStorage rather than the database because it's about this
+// device's screen, not about the note.
 
-const KEY = 'pensar:open-cards'
+const KEY = 'pensar:card-folds'
 
 /** A cap, so a year of reading notes doesn't grow an unbounded list. */
-const LIMIT = 200
+const LIMIT = 300
 
 function read() {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? '[]')
-    return new Set(Array.isArray(raw) ? raw : [])
+    const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}')
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? new Map(Object.entries(raw)) : new Map()
   } catch {
-    return new Set()
+    return new Map()
   }
 }
 
-const open = read()
+const folds = read()
 
 function persist() {
   try {
-    localStorage.setItem(KEY, JSON.stringify([...open].slice(-LIMIT)))
+    const kept = [...folds.entries()].slice(-LIMIT)
+    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(kept)))
   } catch {
     // Private mode, or storage blocked — folding still works for this session.
   }
 }
 
-export function isCardOpen(id) {
-  return open.has(id)
+/** True, false, or undefined when you've never said either way. */
+export function cardFold(id) {
+  return folds.get(id)
 }
 
-/** Fold a card out or back, and report which it now is. */
-export function toggleCardOpen(id) {
-  if (open.has(id)) open.delete(id)
-  else open.add(id)
+/** Remember that this card is open, or closed. */
+export function setCardFold(id, open) {
+  // Re-inserting keeps the most recently touched cards at the end, which is
+  // the half the cap above keeps.
+  folds.delete(id)
+  folds.set(id, Boolean(open))
   persist()
-  return open.has(id)
 }

@@ -26,11 +26,29 @@ export function boardColour(board) {
   return KEYS.has(board?.colour) ? board.colour : DEFAULT_BOARD_COLOUR
 }
 
-/** A handful of emoji worth offering as one-tap board icons. */
-export const BOARD_EMOJI = [
-  '📌', '🗂️', '📚', '✍️', '🎬', '🎧', '🏠', '🌱',
-  '🍳', '🧭', '💡', '🧪', '💼', '✈️', '🏃', '💬',
-]
+/**
+ * One emoji out of whatever was typed — the last one, so picking a second
+ * replaces the first rather than being ignored behind it.
+ *
+ * pensar used to offer a grid of sixteen emoji to choose from. Every phone and
+ * every desktop already has an emoji keyboard with all of them in it, and ours
+ * could only ever be a worse, shorter version of that — so the field takes
+ * whatever the system picker gives it and keeps the last character of it.
+ *
+ * Graphemes, not code points: a flag, a skin tone or a family is several code
+ * points that are one emoji on screen, and cutting through the middle of one
+ * leaves nonsense.
+ */
+export function oneEmoji(value) {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    const parts = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)]
+    return parts.at(-1)?.segment ?? ''
+  }
+  return [...text].at(-1) ?? ''
+}
 
 const FALLBACK_GLYPH = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="4.5" height="16" rx="1.2"/><rect x="9.75" y="4" width="4.5" height="11" rx="1.2"/><rect x="16.5" y="4" width="4.5" height="7" rx="1.2"/></svg>`
 

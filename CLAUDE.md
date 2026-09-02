@@ -27,11 +27,25 @@ A card's placement is its `drawer_id` and nothing else — null means it's a qui
 - No sub-checklists inside a single card, no offline sync — both still out of scope. (A `list` drawer gives each *card* a tick box; that's a different thing.)
 - A true OS home-screen widget is not achievable as a PWA; don't attempt native wrappers for it without discussing first
 
+## How things behave
+
+Decisions that are easy to undo by accident, so they're written down:
+
+- **A title is for long notes only.** A line typed into quick capture or into a tick list becomes the card's *note*, not its title — the heading falls back to the note when there's no title, so a title as well would be the same words twice.
+- **Drawers** are reordered by dragging their header (the menu still offers Move earlier / later, for the keyboard), renamed by clicking the name in place, and **deleting one takes its cards to the trash with it**. They used to be tipped out into Quick notes; that surprised every time.
+- **A note folds itself out** unless it's long, carries more than one picture, or sits in a crowded drawer — `cardStartsOpen` in `cardTile.js`. Whatever the user folds by hand is remembered per device and wins (`openCards.js`).
+- **A picture appears once.** The face carries a thumbnail only while the card is folded away; the note underneath shows it at full width when it isn't.
+- **A gallery is masonry** — CSS columns, pictures uncropped, and a note with no picture becomes a block of text among them. Pictures dropped onto any drawer from outside the browser become cards.
+- **Gestures don't ask first, they offer an undo afterwards** (`undo.js`): merges, files, archives, bin drops and drawer deletes all leave one behind.
+- **Sharing into pensar** from the phone's share sheet is `share_target` in the manifest plus `public/sw.js`, which catches the POST and hands it to `share.js`. Android/Chrome only — iOS doesn't implement share targets for web apps at all. The service worker exists for that one job and caches nothing; pensar is always-online by design.
+
 ## Design
 
 Warm, paper-and-ink feel — not a generic SaaS-card look. Fraunces for headings, Inter for UI text, a teal ink accent, and a three-step priority scale that runs sage → amber → clay. Light/dark follows the system by default with a manual override. Full token list and the reference build lives in `pensar-questionnaire.html` (the intake doc) — same visual direction carries into the app.
 
 A board can be painted with one of eight colours from `src/boardStyle.js`. The colour is stored as a key, never a CSS value, and reaches the tile through `--tint` / `--tint-soft` — so a new colour means one entry there plus one line in each theme block of `style.css`.
+
+Its icon is either an emoji or a picture, and neither has a picker of our own: the emoji is typed into a field with the device's own emoji keyboard (`oneEmoji` keeps the last grapheme), and the picture is a tap on the square in the dialog, or one dropped onto it.
 
 ## Reference documents
 

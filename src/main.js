@@ -1,6 +1,7 @@
 import './style.css'
 import { supabase } from './supabaseClient'
 import { initTheme, cycleTheme, paintThemeButton } from './theme'
+import { captureShare } from './share'
 import { mountHome } from './homeView'
 import { mountBoard } from './boardView'
 import { mountArchived } from './archivedView'
@@ -9,6 +10,30 @@ import { mountTrash } from './trashView'
 const app = document.querySelector('#app')
 
 initTheme()
+
+/* ---------------------------------------------------------------
+   Sharing into pensar
+   A share from the phone arrives as a fresh load at #/share, put
+   there by the service worker — see share.js and public/sw.js.
+   It's taken off the URL here, before anything renders, so that a
+   refresh doesn't replay it and the login screen doesn't lose it.
+   The worker is registered whether or not this load is a share:
+   it's what makes the *next* one possible.
+   --------------------------------------------------------------- */
+
+if (captureShare()) {
+  history.replaceState(null, '', location.pathname + '#/')
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL })
+      .catch(() => {
+        // No share target on this browser, then. Everything else works.
+      })
+  })
+}
 
 // Tear-down for whatever view is currently mounted, so its listeners go with it.
 let unmountView = null

@@ -7,7 +7,7 @@
 
 import { escapeHtml } from './format'
 import { DRAWER_KINDS, DRAWER_KIND_LABELS, DRAWER_KIND_HINTS } from './drawers'
-import { BOARD_COLOURS, BOARD_EMOJI, boardColour } from './boardStyle'
+import { BOARD_COLOURS, boardColour, oneEmoji } from './boardStyle'
 import { uploadBoardIcon, removeImage, signImage } from './images'
 import { setBoardStyle } from './boards'
 
@@ -166,13 +166,17 @@ export function openDrawerDialog({ drawer = null } = {}) {
  * The picture is the odd one out — it uploads and saves the moment it's picked,
  * the way a card's cover does, because it needs a board id to be stored
  * against. That's also why it's only offered for a board that already exists.
+ *
+ * The emoji is whatever your own keyboard offers, typed into a field, rather
+ * than a grid of the handful pensar used to ship — see `oneEmoji`. The picture
+ * is a tap on the square, or one dropped onto it.
  */
 export function openBoardDialog({ board = null } = {}) {
   const editing = Boolean(board)
 
   return openModal({
     build: () => `
-      <h2 class="modal-title">${editing ? 'Board' : 'New board'}</h2>
+      <h2 class="modal-title">${editing ? 'Project' : 'New project'}</h2>
       <form class="modal-form" novalidate>
         <label class="field">
           <span class="field-label">Name</span>
@@ -208,32 +212,53 @@ export function openBoardDialog({ board = null } = {}) {
 
         <div class="field">
           <span class="field-label">Icon</span>
-          <div class="icon-picked" data-icon-preview data-tint="${boardColour(board)}">
-            <img data-icon-image alt="" hidden>
-            <span data-icon-emoji>${escapeHtml(board?.emoji ?? '')}</span>
-          </div>
-          <div class="emoji-row" data-emoji>
-            <button type="button" class="emoji-btn" data-emoji-value="" title="No icon" aria-label="No icon">—</button>
-            ${BOARD_EMOJI.map(
-              (emoji) =>
-                `<button type="button" class="emoji-btn" data-emoji-value="${emoji}" aria-label="${emoji}">${emoji}</button>`
-            ).join('')}
+          <div class="icon-picker">
+            <button
+              type="button"
+              class="icon-picked"
+              data-icon-preview
+              data-tint="${boardColour(board)}"
+              aria-label="${editing ? 'Use a picture' : 'Pick an emoji'}"
+              title="${editing ? 'Use a picture' : 'Pick an emoji'}"
+            >
+              <img data-icon-image alt="" hidden>
+              <span data-icon-emoji>${escapeHtml(board?.emoji ?? '')}</span>
+            </button>
+            <div class="icon-picker-text">
+              <input
+                class="field-input emoji-input"
+                data-emoji-input
+                type="text"
+                autocomplete="off"
+                autocapitalize="off"
+                maxlength="24"
+                placeholder="Emoji"
+                aria-label="Emoji"
+                value="${escapeHtml(board?.emoji ?? '')}"
+              />
+              <p class="field-hint">
+                ${
+                  editing
+                    ? 'Any emoji your keyboard can type. Or tap the square for a picture — you can drop one on it too.'
+                    : 'Any emoji your keyboard can type. A picture can go on once the project exists.'
+                }
+              </p>
+            </div>
           </div>
           ${
             editing
               ? `<div class="icon-file">
-                   <button type="button" class="btn btn-ghost btn-sm" data-icon-pick>Use a picture…</button>
                    <button type="button" class="btn btn-ghost btn-sm menu-danger" data-icon-drop hidden>Remove picture</button>
                    <span class="icon-file-status" data-icon-status hidden></span>
                    <input type="file" accept="image/*" data-icon-input hidden>
                  </div>`
-              : `<p class="field-hint">A picture can go on once the board exists.</p>`
+              : ''
           }
         </div>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Create board'}</button>
+          <button type="submit" class="btn btn-primary">${editing ? 'Save' : 'Create project'}</button>
         </div>
       </form>
     `,
@@ -246,6 +271,8 @@ export function openBoardDialog({ board = null } = {}) {
       const status = modal.querySelector('[data-icon-status]')
       const dropButton = modal.querySelector('[data-icon-drop]')
 
+      const emojiInput = modal.querySelector('[data-emoji-input]')
+
       let colour = boardColour(board)
       let emoji = board?.emoji ?? ''
       let iconPath = board?.icon_path ?? null
@@ -254,15 +281,10 @@ export function openBoardDialog({ board = null } = {}) {
         for (const swatch of modal.querySelectorAll('[data-colour]')) {
           swatch.setAttribute('aria-pressed', String(swatch.dataset.colour === colour))
         }
-        for (const button of modal.querySelectorAll('[data-emoji-value]')) {
-          button.classList.toggle(
-            'is-picked',
-            !iconPath && button.dataset.emojiValue === emoji
-          )
-        }
         preview.dataset.tint = colour
         previewEmoji.textContent = iconPath ? '' : emoji
         previewImage.hidden = !iconPath
+        preview.classList.toggle('is-empty', !iconPath && !emoji)
         if (dropButton) dropButton.hidden = !iconPath
       }
 
@@ -282,22 +304,22 @@ export function openBoardDialog({ board = null } = {}) {
         paint()
       })
 
-      modal.querySelector('[data-emoji]').addEventListener('click', (event) => {
-        const button = event.target.closest('[data-emoji-value]')
-        if (!button) return
-        emoji = button.dataset.emojiValue
+      emojiInput.addEventListener('input', () => {
+        emoji = oneEmoji(emojiInput.value)
+        // What the field holds and what the board gets are the same thing.
+        if (emojiInput.value !== emoji) emojiInput.value = emoji
         // An emoji and a picture are two answers to the same question.
         if (emoji) iconPath = null
         paint()
       })
 
       const iconInput = modal.querySelector('[data-icon-input]')
-      modal.querySelector('[data-icon-pick]')?.addEventListener('click', () => iconInput.click())
 
-      iconInput?.addEventListener('change', async () => {
-        const file = iconInput.files[0]
-        iconInput.value = ''
-        if (!file) return
+      /** Put a picture on the board. It saves itself: there's no board id to
+       *  store it against until the board exists, so this only runs when
+       *  editing one that already does. */
+      async function useIcon(file) {
+        if (!editing || !file) return
 
         status.hidden = false
         status.textContent = 'Uploading…'
@@ -305,12 +327,43 @@ export function openBoardDialog({ board = null } = {}) {
           iconPath = await uploadBoardIcon(board.id, file)
           await setBoardStyle(board.id, { icon_path: iconPath })
           emoji = ''
+          emojiInput.value = ''
           status.hidden = true
           paint()
           await showIcon()
         } catch (error) {
           status.textContent = error?.message || 'That upload did not go through.'
         }
+      }
+
+      // The square is the picture: tap it to pick one, or drop one on it. With
+      // no board to store it against yet, it sends you to the emoji instead.
+      preview.addEventListener('click', () => {
+        if (editing) iconInput.click()
+        else emojiInput.focus()
+      })
+
+      if (editing) {
+        preview.addEventListener('dragover', (event) => {
+          if (![...(event.dataTransfer?.types ?? [])].includes('Files')) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'copy'
+          preview.classList.add('is-dropping')
+        })
+
+        preview.addEventListener('dragleave', () => preview.classList.remove('is-dropping'))
+
+        preview.addEventListener('drop', (event) => {
+          event.preventDefault()
+          preview.classList.remove('is-dropping')
+          useIcon(event.dataTransfer?.files?.[0])
+        })
+      }
+
+      iconInput?.addEventListener('change', () => {
+        const file = iconInput.files[0]
+        iconInput.value = ''
+        useIcon(file)
       })
 
       dropButton?.addEventListener('click', async () => {

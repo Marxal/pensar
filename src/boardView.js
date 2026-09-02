@@ -3,33 +3,54 @@
 // cardTile.js — and nothing about a card changes when a drawer changes shape.
 //
 // Dragging is the shared engine in drag.js: press and move with a mouse, press
-// and hold with a finger. Three things can happen at the end of one:
+// and hold with a finger. There are two of them here, and they never overlap
+// because they start from different places:
 //
-//   - dropped between cards, it moves and reorders;
-//   - held over another card until it lights up, it merges into it;
-//   - dropped on the bar that appears along the bottom, it's archived or binned.
+//   - **a card**, picked up from anywhere on its face. Dropped between cards it
+//     moves and reorders; held over another card until it lights up, it merges
+//     into it; dropped on the bar along the bottom, it's archived or binned.
+//   - **a drawer**, picked up by its header, which reorders the drawers.
+//
+// Pictures dragged in from outside the browser are a third thing entirely —
+// those are native file drops, and they land as new cards in whatever drawer
+// they were dropped on.
+//
+// Anything that moves something without asking first leaves an undo offer
+// behind it (undo.js) rather than a confirmation in front of it.
 
 import { getBoard, listBoards, renameBoard, setBoardStyle, archiveBoard, trashBoard } from './boards'
-import { listAllDrawers, createDrawer, updateDrawer, deleteDrawer, moveDrawer } from './drawers'
+import {
+  listAllDrawers,
+  createDrawer,
+  updateDrawer,
+  deleteDrawer,
+  moveDrawer,
+  saveDrawerOrder,
+} from './drawers'
 import {
   listCards,
   createCard,
   setCardDone,
   archiveCard,
+  unarchiveCard,
   trashCard,
+  restoreCard,
+  restoreCards,
   moveCardToDrawer,
   mergeCards,
+  undoMerge,
   saveOrder,
 } from './cards'
 import { openBoardDialog, openConfirm, openDrawerDialog, openMovePicker } from './dialogs'
 import { openNote } from './noteEditor'
 import { openLightbox } from './lightbox'
-import { renderCard, cardHeading, dressNotes } from './cardTile'
+import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
-import { signImages } from './images'
+import { signImages, looksLikeImage, uploadNoteImage } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
-import { isCardOpen, toggleCardOpen } from './openCards'
+import { setCardFold } from './openCards'
+import { offerUndo, dismissUndo } from './undo'
 import { escapeHtml, plural } from './format'
 
 const ICONS = {
@@ -39,6 +60,9 @@ const ICONS = {
   archive: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="4" rx="1.2"/><path d="M4.75 8.5v9.25a1.75 1.75 0 0 0 1.75 1.75h11a1.75 1.75 0 0 0 1.75-1.75V8.5M10 12.5h4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
   check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
+  expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h5v5M20 4l-6.5 6.5M9 20H4v-5M4 20l6.5-6.5"/></svg>`,
+  collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 9h-5V4M14.5 9.5 20 4M4 15h5v5M9.5 14.5 4 20"/></svg>`,
+  picture: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
 }
 
 /** How long a card has to be held over another before the two would merge. */
@@ -59,6 +83,8 @@ export function mountBoard(root, boardId) {
     status: 'loading', // loading | ready | error | missing
     error: '',
     busy: false, // an action is in flight; blocks double-taps
+    focus: null, // a drawer being looked at on its own
+    renaming: null, // a drawer whose name is being typed over
   }
 
   let alive = true
@@ -69,6 +95,18 @@ export function mountBoard(root, boardId) {
   let mergeTarget = null
   let mergeCandidate = null
   let mergeTimer = null
+  let fileTarget = null
+
+  // Pictures chosen with the "Add pictures" button. It lives on the body
+  // rather than inside the page so that a re-render mid-pick can't take the
+  // input — and the change event with it — out from under the file dialog.
+  const pictureInput = document.createElement('input')
+  pictureInput.type = 'file'
+  pictureInput.accept = 'image/*'
+  pictureInput.multiple = true
+  pictureInput.hidden = true
+  document.body.append(pictureInput)
+  let pictureDrawer = null
 
   /* ---------------------------------------------------------------
      Markup
@@ -80,31 +118,74 @@ export function mountBoard(root, boardId) {
       .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at))
   }
 
+  function adderFor(drawer) {
+    if (drawer.kind === 'list') {
+      return `<form class="drawer-add-line" data-add-form data-drawer="${drawer.id}">
+                <input
+                  class="drawer-add-input"
+                  type="text"
+                  name="title"
+                  autocomplete="off"
+                  maxlength="200"
+                  placeholder="Add an item…"
+                />
+                <button type="submit" class="icon-btn icon-btn-sm" aria-label="Add" title="Add">${ICONS.plus}</button>
+              </form>`
+    }
+
+    if (drawer.kind === 'gallery') {
+      return `<button type="button" class="drawer-add" data-act="add-pictures" data-drawer="${drawer.id}">
+                ${ICONS.picture} Add pictures
+              </button>`
+    }
+
+    return `<button type="button" class="drawer-add" data-act="add" data-drawer="${drawer.id}">
+              ${ICONS.plus} Add note
+            </button>`
+  }
+
+  function drawerTitle(drawer) {
+    if (state.renaming === drawer.id) {
+      return `<input
+                class="drawer-title-input"
+                data-rename="${drawer.id}"
+                type="text"
+                maxlength="40"
+                autocomplete="off"
+                aria-label="Drawer name"
+                value="${escapeHtml(drawer.name)}"
+              />`
+    }
+
+    return `<button
+              type="button"
+              class="drawer-title"
+              data-act="drawer-rename"
+              data-drawer="${drawer.id}"
+              title="Rename this drawer"
+            >${escapeHtml(drawer.name)}</button>`
+  }
+
   function drawerSection(drawer, index) {
     const cards = cardsIn(drawer.id)
-
-    const adder =
-      drawer.kind === 'list'
-        ? `<form class="drawer-add-line" data-add-form data-drawer="${drawer.id}">
-             <input
-               class="drawer-add-input"
-               type="text"
-               name="title"
-               autocomplete="off"
-               maxlength="200"
-               placeholder="Add an item…"
-             />
-             <button type="submit" class="icon-btn icon-btn-sm" aria-label="Add" title="Add">${ICONS.plus}</button>
-           </form>`
-        : `<button type="button" class="drawer-add" data-act="add" data-drawer="${drawer.id}">
-             ${ICONS.plus} Add ${drawer.kind === 'gallery' ? 'picture' : 'note'}
-           </button>`
+    const crowded = cards.length > CROWDED_AT
+    const focused = state.focus === drawer.id
 
     return `
       <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}">
-        <header class="drawer-head">
-          <h3 class="drawer-title">${escapeHtml(drawer.name)}</h3>
+        <header class="drawer-head"${state.focus ? '' : ' data-drawer-handle'}>
+          ${drawerTitle(drawer)}
           <span class="drawer-count">${cards.length}</span>
+          <button
+            type="button"
+            class="icon-btn icon-btn-sm"
+            data-act="drawer-focus"
+            data-drawer="${drawer.id}"
+            data-no-drag
+            aria-pressed="${String(focused)}"
+            aria-label="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
+            title="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
+          >${focused ? ICONS.collapse : ICONS.expand}</button>
           <div class="menu">
             <button
               type="button"
@@ -128,12 +209,19 @@ export function mountBoard(root, boardId) {
 
         <div class="drawer-cards" data-cards>
           ${cards
-            .map((card) => renderCard(card, { kind: drawer.kind, expanded: isCardOpen(card.id) }))
+            .map((card) =>
+              renderCard(card, {
+                kind: drawer.kind,
+                expanded: cardStartsOpen(card, { kind: drawer.kind, crowded }),
+              })
+            )
             .join('')}
-          <p class="drawer-empty"${cards.length ? ' hidden' : ''}>Nothing here yet</p>
+          <p class="drawer-empty"${cards.length ? ' hidden' : ''}>
+            ${drawer.kind === 'gallery' ? 'Drop pictures here' : 'Nothing here yet'}
+          </p>
         </div>
 
-        ${adder}
+        ${adderFor(drawer)}
       </section>
     `
   }
@@ -154,18 +242,36 @@ export function mountBoard(root, boardId) {
         ? `${plural(state.cards.length, 'card')} · ${plural(state.drawers.length, 'drawer')}`
         : '&nbsp;'
 
+    const style = state.board
+      ? `<button
+           type="button"
+           class="page-head-glyph"
+           data-act="board-edit"
+           aria-label="Name, colour and icon"
+           title="Name, colour &amp; icon"
+         >${renderBoardGlyph(state.board, state.images)}</button>`
+      : ''
+
     return `
       <header class="page-head">
         <div class="page-head-text">
           <button type="button" class="icon-btn" data-act="back" aria-label="Back" title="Back">${ICONS.back}</button>
-          ${state.board ? renderBoardGlyph(state.board, state.images) : ''}
+          ${style}
           <div>
-            <h2 class="page-title">${escapeHtml(state.board?.name ?? 'Board')}</h2>
+            <h2 class="page-title">
+              <button type="button" class="title-btn" data-act="board-edit" title="Name, colour &amp; icon">
+                ${escapeHtml(state.board?.name ?? 'Board')}
+              </button>
+            </h2>
             <p class="page-sub">${sub}</p>
           </div>
         </div>
         <div class="page-head-actions">
-          <button type="button" class="btn btn-ghost btn-sm" data-act="drawer-new">${ICONS.plus} Drawer</button>
+          ${
+            state.focus
+              ? `<button type="button" class="btn btn-ghost btn-sm" data-act="drawer-unfocus">${ICONS.collapse} All drawers</button>`
+              : `<button type="button" class="btn btn-ghost btn-sm" data-act="drawer-new">${ICONS.plus} Drawer</button>`
+          }
           <div class="menu">
             <button
               type="button"
@@ -235,9 +341,13 @@ export function mountBoard(root, boardId) {
         </div>
       `
     } else {
+      const shown = state.focus
+        ? state.drawers.filter((drawer) => drawer.id === state.focus)
+        : state.drawers
+
       body = `
-        <div class="drawers" data-lane>
-          ${state.drawers.map(drawerSection).join('')}
+        <div class="drawers${state.focus ? ' is-focused' : ''}" data-lane>
+          ${shown.map((drawer) => drawerSection(drawer, state.drawers.indexOf(drawer))).join('')}
         </div>
       `
     }
@@ -245,6 +355,12 @@ export function mountBoard(root, boardId) {
     root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}">${head()}${body}</section>${dropBar()}`
     hydrateNoteImages(root)
     dressNotes(root)
+
+    const renaming = root.querySelector('[data-rename]')
+    if (renaming) {
+      renaming.focus()
+      renaming.select()
+    }
   }
 
   /* ---------------------------------------------------------------
@@ -275,6 +391,10 @@ export function mountBoard(root, boardId) {
       state.cards = cards
       state.boards = boards
       state.status = 'ready'
+      // The drawer you were looking at on its own may have gone since.
+      if (state.focus && !state.drawers.some((drawer) => drawer.id === state.focus)) {
+        state.focus = null
+      }
       paintBoardIcon()
     } catch (error) {
       if (!alive) return
@@ -298,22 +418,25 @@ export function mountBoard(root, boardId) {
     render()
   }
 
-  /** Run a mutation, then reload. Errors surface in the banner. */
+  /** Run a mutation, then reload. Errors surface in the banner. Reports
+   *  whether it went through, which is what decides if an undo is offered. */
   async function mutate(fn) {
-    if (state.busy) return
+    if (state.busy) return false
     state.busy = true
     render()
     try {
       await fn()
-      if (!alive) return
+      if (!alive) return false
       state.busy = false
       await load()
+      return true
     } catch (error) {
-      if (!alive) return
+      if (!alive) return false
       state.busy = false
       state.status = 'error'
       state.error = error?.message || 'That did not go through.'
       render()
+      return false
     }
   }
 
@@ -351,10 +474,15 @@ export function mountBoard(root, boardId) {
     await openCard(null, drawerId)
   }
 
-  async function onQuickAdd(drawerId, title) {
-    if (!title.trim()) return
+  /**
+   * A line typed into a tick list becomes the card's *note*, not its title.
+   * Titles are for long notes that need a heading to be scannable; a to-do is
+   * a line of text, and giving it a title as well would mean writing it twice.
+   */
+  async function onQuickAdd(drawerId, text) {
+    if (!text.trim()) return
     try {
-      await createCard(drawerId, { title })
+      await createCard(drawerId, { body_markdown: text.trim() })
       if (!alive) return
       await load()
       root.querySelector(`[data-add-form][data-drawer="${drawerId}"] input`)?.focus()
@@ -364,6 +492,22 @@ export function mountBoard(root, boardId) {
       state.error = error?.message || 'That did not go through.'
       render()
     }
+  }
+
+  /** Pictures dropped on a drawer, or chosen with its button: one card each,
+   *  with the picture as the whole note. */
+  async function addPictures(drawerId, files) {
+    const pictures = [...files].filter((file) => looksLikeImage(file.type))
+    if (!pictures.length || !drawerById(drawerId)) return
+
+    await mutate(async () => {
+      // One at a time: each card's position is read off the drawer as it goes
+      // in, so uploading them in parallel would land them all on the same spot.
+      for (const file of pictures) {
+        const path = await uploadNoteImage(file)
+        await createCard(drawerId, { body_markdown: `![](pensar-image/${path})` })
+      }
+    })
   }
 
   function onTick(id) {
@@ -391,12 +535,19 @@ export function mountBoard(root, boardId) {
     const card = cardById(id)
     if (!card) return
 
+    const from = card.drawer_id
     const picked = await openMovePicker({
       boards: state.boards,
       drawers: state.allDrawers,
-      currentDrawerId: card.drawer_id,
+      currentDrawerId: from,
     })
-    if (picked) await mutate(() => moveCardToDrawer(id, picked.drawerId))
+    if (!picked) return
+
+    if (!(await mutate(() => moveCardToDrawer(id, picked.drawerId)))) return
+    offerUndo({
+      message: 'Card moved',
+      undo: () => mutate(() => moveCardToDrawer(id, from)),
+    })
   }
 
   /** Copy a card's title and note as plain text. Flashes the button's icon to
@@ -426,6 +577,26 @@ export function mountBoard(root, boardId) {
     }, 1200)
   }
 
+  async function onArchive(id) {
+    if (!(await mutate(() => archiveCard(id)))) return
+    offerUndo({ message: 'Card archived', undo: () => mutate(() => unarchiveCard(id)) })
+  }
+
+  async function onTrashFromBar(id) {
+    if (!(await mutate(() => trashCard(id)))) return
+    offerUndo({ message: 'Card moved to the trash', undo: () => mutate(() => restoreCard(id)) })
+  }
+
+  async function onMerge(targetId, sourceId) {
+    let receipt = null
+    await mutate(async () => {
+      receipt = await mergeCards(targetId, sourceId)
+    })
+    if (!receipt || !alive) return
+
+    offerUndo({ message: 'Notes merged', undo: () => mutate(() => undoMerge(receipt)) })
+  }
+
   async function onNewDrawer() {
     const fields = await openDrawerDialog()
     if (fields) await mutate(() => createDrawer(boardId, fields))
@@ -439,20 +610,81 @@ export function mountBoard(root, boardId) {
     if (fields) await mutate(() => updateDrawer(id, fields))
   }
 
+  /** Deleting a drawer takes its cards with it — see drawers.js. The undo
+   *  builds the drawer again and lifts every card back out of the trash. */
   async function onDeleteDrawer(id) {
     const drawer = drawerById(id)
     if (!drawer) return
 
-    const count = cardsIn(id).length
+    const inside = cardsIn(id).map((card) => ({ id: card.id, position: card.position }))
     const ok = await openConfirm({
       title: `Delete “${drawer.name}”?`,
-      message: count
-        ? `${plural(count, 'card')} inside will go back to Quick notes — nothing is deleted with it.`
+      message: inside.length
+        ? `${plural(inside.length, 'card')} inside goes to the trash with it.`
         : 'The drawer is empty, so nothing goes with it.',
       confirmLabel: 'Delete drawer',
       destructive: true,
     })
-    if (ok) await mutate(() => deleteDrawer(id))
+    if (!ok) return
+
+    if (state.focus === id) state.focus = null
+    if (!(await mutate(() => deleteDrawer(id)))) return
+
+    offerUndo({
+      message: inside.length
+        ? `“${drawer.name}” and ${plural(inside.length, 'card')} deleted`
+        : `“${drawer.name}” deleted`,
+      undo: () =>
+        mutate(async () => {
+          const made = await createDrawer(drawer.board_id, {
+            name: drawer.name,
+            kind: drawer.kind,
+            position: drawer.position,
+          })
+          if (inside.length) {
+            await restoreCards(inside.map((card) => ({ ...card, drawer_id: made.id })))
+          }
+        }),
+    })
+  }
+
+  function onRenameDrawer(id) {
+    if (!drawerById(id)) return
+    state.renaming = id
+    render()
+  }
+
+  /**
+   * Put the name away and go back to showing it.
+   *
+   * The swap is done in place rather than by re-rendering the board, because
+   * this runs on focusout: clicking a menu while a name is being typed has to
+   * both save the name and open the menu, and a re-render underneath that
+   * click would take the menu away before it opened.
+   */
+  function closeRename(input, name = null) {
+    const id = input.dataset.rename
+    if (state.renaming !== id) return
+    state.renaming = null
+
+    const drawer = drawerById(id)
+    if (!drawer) {
+      input.remove()
+      return
+    }
+
+    const changed = name && name !== drawer.name
+    if (changed) drawer.name = name // the eye has already seen it
+
+    const holder = document.createElement('div')
+    holder.innerHTML = drawerTitle(drawer)
+    input.replaceWith(holder.firstElementChild)
+
+    if (changed) mutateQuietly(() => updateDrawer(id, { name }))
+  }
+
+  function commitRename(input) {
+    closeRename(input, input.value.trim())
   }
 
   async function onEditBoard() {
@@ -513,7 +745,7 @@ export function mountBoard(root, boardId) {
   }
 
   /* ---------------------------------------------------------------
-     Dragging
+     Dragging a card
      --------------------------------------------------------------- */
 
   function dropBarElement() {
@@ -610,7 +842,9 @@ export function mountBoard(root, boardId) {
     return best
   }
 
-  /** Slot the dragged card into wherever the pointer is hovering. */
+  /** Slot the dragged card into wherever the pointer is hovering. A gallery
+   *  lays its cards out in masonry columns rather than a single stack, so
+   *  "which card is this going before" is a question about both axes there. */
   function place(x, y, element) {
     const drawer = nearestDrawer(x, y)
     if (!drawer) return
@@ -621,11 +855,29 @@ export function mountBoard(root, boardId) {
 
     const list = drawer.querySelector('.drawer-cards')
     const siblings = [...list.querySelectorAll(':scope > .card')].filter((el) => el !== element)
+    const masonry = drawer.dataset.kind === 'gallery'
 
-    const before = siblings.find((el) => {
-      const rect = el.getBoundingClientRect()
-      return y < rect.top + rect.height / 2
-    })
+    let before
+    if (masonry) {
+      let bestDistance = Infinity
+      for (const el of siblings) {
+        const rect = el.getBoundingClientRect()
+        const cx = rect.left + rect.width / 2
+        const cy = rect.top + rect.height / 2
+        const distance = (x - cx) ** 2 + (y - cy) ** 2
+        if (distance >= bestDistance) continue
+        bestDistance = distance
+        // Before the nearest card when the pointer is above or left of its
+        // middle, after it otherwise.
+        before = y < cy || (Math.abs(y - cy) < rect.height / 2 && x < cx) ? el : el.nextElementSibling
+      }
+      if (before && !before.classList?.contains('card')) before = undefined
+    } else {
+      before = siblings.find((el) => {
+        const rect = el.getBoundingClientRect()
+        return y < rect.top + rect.height / 2
+      })
+    }
 
     if (before) list.insertBefore(element, before)
     else list.append(element)
@@ -677,6 +929,7 @@ export function mountBoard(root, boardId) {
 
     onStart() {
       closeMenus()
+      dismissUndo()
       const bar = dropBarElement()
       if (bar) bar.hidden = false
     },
@@ -706,9 +959,9 @@ export function mountBoard(root, boardId) {
 
       finishDrag()
 
-      if (droppedZone === 'delete') mutate(() => trashCard(id))
-      else if (droppedZone === 'archive') mutate(() => archiveCard(id))
-      else if (target) mutate(() => mergeCards(target.dataset.card, id))
+      if (droppedZone === 'delete') onTrashFromBar(id)
+      else if (droppedZone === 'archive') onArchive(id)
+      else if (target) onMerge(target.dataset.card, id)
       else commitOrder()
     },
 
@@ -730,6 +983,142 @@ export function mountBoard(root, boardId) {
   }
 
   /* ---------------------------------------------------------------
+     Dragging a drawer
+     --------------------------------------------------------------- */
+
+  /** Move the dragged drawer to wherever the pointer has reached. Which axis
+   *  decides is the same question the stylesheet answers at 48rem: a row of
+   *  columns on a wide screen, a stack on a phone. */
+  function placeDrawer(x, y, handle) {
+    const lane = root.querySelector('[data-lane]')
+    const moving = handle.closest('.drawer')
+    if (!lane || !moving) return
+
+    const stacked = window.matchMedia('(max-width: 48rem)').matches
+    const others = [...lane.querySelectorAll(':scope > .drawer')].filter((el) => el !== moving)
+
+    const before = others.find((el) => {
+      const rect = el.getBoundingClientRect()
+      return stacked ? y < rect.top + rect.height / 2 : x < rect.left + rect.width / 2
+    })
+
+    if (before) {
+      if (moving.nextElementSibling !== before) lane.insertBefore(moving, before)
+    } else if (lane.lastElementChild !== moving) {
+      lane.append(moving)
+    }
+  }
+
+  async function commitDrawerOrder() {
+    const lane = root.querySelector('[data-lane]')
+    if (!lane) return
+
+    const ids = [...lane.querySelectorAll(':scope > .drawer[data-drawer]')].map(
+      (element) => element.dataset.drawer
+    )
+    if (ids.every((id, index) => state.drawers[index]?.id === id)) {
+      render()
+      return
+    }
+
+    // Optimistic: they're already in the new order on screen.
+    const byId = new Map(state.drawers.map((drawer) => [drawer.id, drawer]))
+    state.drawers = ids.map((id, position) => {
+      const drawer = byId.get(id)
+      drawer.position = position
+      return drawer
+    })
+    render()
+    await mutateQuietly(() => saveDrawerOrder(ids))
+  }
+
+  const drawerDrag = createDragEngine({
+    root,
+    // Its header is the drawer's handle: everything below it belongs to the
+    // cards, which have a drag of their own. The handle is left off while one
+    // drawer is being looked at on its own — there's nothing to reorder it
+    // against, and half a row of drawers must not be renumbered from what one
+    // of them can see.
+    selector: '.drawer-head[data-drawer-handle]',
+    blockSelector: '.menu, input, a, [data-no-drag]',
+    scroller: () => root.querySelector('[data-lane]'),
+
+    onStart(handle) {
+      closeMenus()
+      dismissUndo()
+      handle.closest('.drawer')?.classList.add('is-drawer-dragging')
+    },
+
+    onMove(x, y, handle) {
+      placeDrawer(x, y, handle)
+    },
+
+    onDrop(handle) {
+      finishDrawerDrag(handle)
+      commitDrawerOrder()
+    },
+
+    onCancel(handle) {
+      finishDrawerDrag(handle)
+      if (alive) render()
+    },
+  })
+
+  function finishDrawerDrag(handle) {
+    handle?.closest('.drawer')?.classList.remove('is-drawer-dragging')
+    for (const element of root.querySelectorAll('.drawer.is-drawer-dragging')) {
+      element.classList.remove('is-drawer-dragging')
+    }
+  }
+
+  /* ---------------------------------------------------------------
+     Pictures dropped in from outside
+     --------------------------------------------------------------- */
+
+  function setFileTarget(next) {
+    if (fileTarget === next) return
+    fileTarget?.classList.remove('is-file-target')
+    fileTarget = next
+    fileTarget?.classList.add('is-file-target')
+  }
+
+  function carriesFiles(event) {
+    return [...(event.dataTransfer?.types ?? [])].includes('Files')
+  }
+
+  function onDragOver(event) {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setFileTarget(event.target.closest?.('.drawer[data-drawer]') ?? null)
+  }
+
+  function onDragLeave(event) {
+    // Only when the pointer has actually left the page area, not on the way
+    // between two elements inside it.
+    if (!event.relatedTarget || !root.contains(event.relatedTarget)) setFileTarget(null)
+  }
+
+  function onFileDrop(event) {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+
+    const drawer = event.target.closest?.('.drawer[data-drawer]') ?? fileTarget
+    setFileTarget(null)
+    if (!drawer) return
+
+    addPictures(drawer.dataset.drawer, event.dataTransfer.files)
+  }
+
+  pictureInput.addEventListener('change', () => {
+    const files = [...pictureInput.files]
+    const drawerId = pictureDrawer
+    pictureInput.value = ''
+    pictureDrawer = null
+    if (files.length && drawerId) addPictures(drawerId, files)
+  })
+
+  /* ---------------------------------------------------------------
      Wiring
      --------------------------------------------------------------- */
 
@@ -738,14 +1127,14 @@ export function mountBoard(root, boardId) {
     if (!form) return
     event.preventDefault()
     const input = form.elements.title
-    const title = input.value
+    const text = input.value
     input.value = ''
-    onQuickAdd(form.dataset.drawer, title)
+    onQuickAdd(form.dataset.drawer, text)
   }
 
   function onClick(event) {
     // A click fires at the end of a drag; that isn't a tap on the card.
-    if (drag.justDragged()) return
+    if (drag.justDragged() || drawerDrag.justDragged()) return
 
     // A picture inside a folded-out note opens full size; one inside a link
     // card is the link's own, and follows it.
@@ -769,11 +1158,15 @@ export function mountBoard(root, boardId) {
       case 'add':
         onAddNote(drawer)
         break
+      case 'add-pictures':
+        pictureDrawer = drawer
+        pictureInput.click()
+        break
       case 'open':
         openCard(cardById(id))
         break
       case 'fold':
-        toggleCardOpen(id)
+        setCardFold(id, target.getAttribute('aria-expanded') !== 'true')
         render()
         break
       case 'tick':
@@ -786,7 +1179,7 @@ export function mountBoard(root, boardId) {
         onMove(id)
         break
       case 'archive':
-        mutate(() => archiveCard(id))
+        onArchive(id)
         break
       case 'delete':
         onDelete(id)
@@ -799,6 +1192,17 @@ export function mountBoard(root, boardId) {
         break
       case 'drawer-edit':
         onEditDrawer(drawer)
+        break
+      case 'drawer-rename':
+        onRenameDrawer(drawer)
+        break
+      case 'drawer-focus':
+        state.focus = state.focus === drawer ? null : drawer
+        render()
+        break
+      case 'drawer-unfocus':
+        state.focus = null
+        render()
         break
       case 'drawer-left':
         mutate(() => moveDrawer(state.drawers, drawer, -1))
@@ -828,10 +1232,38 @@ export function mountBoard(root, boardId) {
   }
 
   function onKeydown(event) {
-    if (event.key === 'Escape') closeMenus()
+    const renaming = event.target.closest?.('[data-rename]')
+    if (renaming) {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commitRename(renaming)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        closeRename(renaming)
+      }
+      return
+    }
+
+    if (event.key !== 'Escape') return
+    closeMenus()
+    if (state.focus) {
+      state.focus = null
+      render()
+    }
+  }
+
+  /** Clicking away from a name being typed keeps it, the way closing a note
+   *  saves it. */
+  function onFocusOut(event) {
+    const input = event.target.closest?.('[data-rename]')
+    if (input) commitRename(input)
   }
 
   root.addEventListener('submit', onSubmit)
+  root.addEventListener('focusout', onFocusOut)
+  root.addEventListener('dragover', onDragOver)
+  root.addEventListener('dragleave', onDragLeave)
+  root.addEventListener('drop', onFileDrop)
   document.addEventListener('click', onClick)
   document.addEventListener('keydown', onKeydown)
 
@@ -840,8 +1272,15 @@ export function mountBoard(root, boardId) {
   return function unmount() {
     alive = false
     clearMerge()
+    dismissUndo()
     drag.destroy()
+    drawerDrag.destroy()
+    pictureInput.remove()
     root.removeEventListener('submit', onSubmit)
+    root.removeEventListener('focusout', onFocusOut)
+    root.removeEventListener('dragover', onDragOver)
+    root.removeEventListener('dragleave', onDragLeave)
+    root.removeEventListener('drop', onFileDrop)
     document.removeEventListener('click', onClick)
     document.removeEventListener('keydown', onKeydown)
   }

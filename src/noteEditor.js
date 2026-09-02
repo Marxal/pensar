@@ -35,6 +35,7 @@ const ICONS = {
   image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
   link: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5a3.5 3.5 0 0 0 5 0l3-3a3.54 3.54 0 0 0-5-5l-1.4 1.4M13.5 10.5a3.5 3.5 0 0 0-5 0l-3 3a3.54 3.54 0 0 0 5 5l1.4-1.4"/></svg>`,
   list: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.75" cy="6.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="17.5" r="1.1" fill="currentColor" stroke="none"/></svg>`,
+  numbers: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6.5h10M10 12h10M10 17.5h10M3.4 4.8l1.4-.8v4.4M3.2 10.6h2.6l-2.6 3.3h2.6M3.2 16.2h2.4v1.6H3.6v1.6h2"/></svg>`,
   calendar: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="14" rx="2"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>`,
   close: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
 }
@@ -207,6 +208,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
           <button type="button" class="note-tool" data-tool="bold" aria-label="Bold" title="Bold"><strong>B</strong></button>
           <button type="button" class="note-tool" data-tool="italic" aria-label="Italic" title="Italic"><em>I</em></button>
           <button type="button" class="note-tool" data-tool="list" aria-label="Bulleted list" title="Bulleted list">${ICONS.list}</button>
+          <button type="button" class="note-tool" data-tool="numbers" aria-label="Numbered list" title="Numbered list">${ICONS.numbers}</button>
 
           <span class="note-tools-gap"></span>
 
@@ -626,6 +628,10 @@ export function openNote({ card = null, drawerId = null } = {}) {
           break
         case 'list':
           document.execCommand('insertUnorderedList')
+          markDirty()
+          break
+        case 'numbers':
+          document.execCommand('insertOrderedList')
           markDirty()
           break
         case 'link': {

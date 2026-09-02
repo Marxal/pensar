@@ -7,7 +7,9 @@
 //
 // Quick notes stay newest-first and aren't reorderable on purpose: this is a
 // capture list, and the thing you just wrote belongs at the top. Dragging one
-// is for filing it, folding it into another note, or throwing it away.
+// is for filing it, folding it into another note, or throwing it away. With
+// nothing waiting, the whole section goes away rather than sitting there as an
+// empty box — the projects move up and the screen is about them instead.
 
 import {
   listBoards,
@@ -24,19 +26,24 @@ import {
   countCardsByBoard,
   createQuickNote,
   archiveCard,
+  unarchiveCard,
   trashCard,
+  restoreCard,
   moveCardToDrawer,
   mergeCards,
+  undoMerge,
 } from './cards'
 import { openBoardDialog, openConfirm, openMovePicker } from './dialogs'
 import { openNote } from './noteEditor'
 import { openLightbox } from './lightbox'
-import { renderCard, cardHeading, dressNotes } from './cardTile'
+import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { signImages } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
-import { isCardOpen, toggleCardOpen } from './openCards'
+import { setCardFold } from './openCards'
+import { takeSharedNotes } from './share'
+import { offerUndo, dismissUndo } from './undo'
 import { escapeHtml, plural } from './format'
 
 const ICONS = {
@@ -68,6 +75,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     images: new Map(), // storage path → signed URL
     status: 'loading', // loading | ready | error
     error: '',
+    notice: '', // something went wrong beside the main load, not instead of it
     busy: false, // an action is in flight; blocks double-taps
   }
 
@@ -125,21 +133,27 @@ export function mountHome(root, { autoFocus = false } = {}) {
     `
   }
 
+  /** Nothing waiting means nothing to draw: no header, no count, no empty box.
+   *  The capture field above is how a quick note appears in the first place. */
   function quickNotes() {
-    if (!state.notes.length) {
-      return `
-        <p class="section-empty">
-          Nothing waiting. Write a line above, or start a full note with the note button.
-        </p>
-      `
-    }
+    if (!state.notes.length) return ''
+
+    const crowded = state.notes.length > CROWDED_AT
 
     return `
-      <div class="quick-notes" data-cards>
-        ${state.notes
-          .map((card) => renderCard(card, { kind: 'notes', expanded: isCardOpen(card.id) }))
-          .join('')}
-      </div>
+      <section class="home-section">
+        <header class="section-head">
+          <h3 class="section-title">Quick notes</h3>
+          <span class="section-count">${state.notes.length}</span>
+        </header>
+        <div class="quick-notes" data-cards>
+          ${state.notes
+            .map((card) =>
+              renderCard(card, { kind: 'notes', expanded: cardStartsOpen(card, { crowded }) })
+            )
+            .join('')}
+        </div>
+      </section>
     `
   }
 
@@ -203,13 +217,12 @@ export function mountHome(root, { autoFocus = false } = {}) {
       `
     } else {
       body = `
-        <section class="home-section">
-          <header class="section-head">
-            <h3 class="section-title">Quick notes</h3>
-            <span class="section-count">${state.notes.length}</span>
-          </header>
-          ${quickNotes()}
-        </section>
+        ${
+          state.notice
+            ? `<div class="banner banner-error"><p>${escapeHtml(state.notice)}</p></div>`
+            : ''
+        }
+        ${quickNotes()}
 
         <section class="home-section">
           <header class="section-head">
@@ -242,6 +255,16 @@ export function mountHome(root, { autoFocus = false } = {}) {
 
   async function load() {
     if (state.status !== 'ready') render()
+
+    // Anything the phone shared into pensar lands in Quick notes, and has to
+    // be written before the list below is read or it wouldn't be in it.
+    state.notice = ''
+    try {
+      await takeSharedNotes()
+    } catch (error) {
+      // The share is kept for the next try rather than dropped on the floor.
+      state.notice = error?.message || 'What you shared could not be saved yet.'
+    }
 
     try {
       const [notes, boards, drawers, counts, archivedCount] = await Promise.all([
@@ -287,22 +310,25 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (isNew) render()
   }
 
-  /** Run a mutation, then reload. Errors surface in the banner. */
+  /** Run a mutation, then reload. Errors surface in the banner. Reports
+   *  whether it went through, which is what decides if an undo is offered. */
   async function mutate(fn) {
-    if (state.busy) return
+    if (state.busy) return false
     state.busy = true
     render()
     try {
       await fn()
-      if (!alive) return
+      if (!alive) return false
       state.busy = false
       await load()
+      return true
     } catch (error) {
-      if (!alive) return
+      if (!alive) return false
       state.busy = false
       state.status = 'error'
       state.error = error?.message || 'That did not go through.'
       render()
+      return false
     }
   }
 
@@ -322,12 +348,14 @@ export function mountHome(root, { autoFocus = false } = {}) {
     return state.boards.find((board) => board.id === id)
   }
 
-  async function onCapture(rawTitle) {
-    const title = rawTitle.trim()
-    if (!title || state.busy) return
+  /** A captured line is the note itself, not a title for one. Titles are for
+   *  long notes that need a heading to stay scannable. */
+  async function onCapture(rawText) {
+    const text = rawText.trim()
+    if (!text || state.busy) return
 
     try {
-      await createQuickNote(title)
+      await createQuickNote(text)
       if (!alive) return
       await load()
       focusCapture()
@@ -363,7 +391,13 @@ export function mountHome(root, { autoFocus = false } = {}) {
       drawers: state.drawers,
       currentDrawerId: null,
     })
-    if (picked) await mutate(() => moveCardToDrawer(id, picked.drawerId))
+    if (!picked) return
+
+    if (!(await mutate(() => moveCardToDrawer(id, picked.drawerId)))) return
+    offerUndo({
+      message: 'Note filed',
+      undo: () => mutate(() => moveCardToDrawer(id, null)),
+    })
   }
 
   async function onCopy(id, button) {
@@ -388,6 +422,35 @@ export function mountHome(root, { autoFocus = false } = {}) {
       button.classList.remove('is-copied')
       button.innerHTML = original
     }, 1200)
+  }
+
+  async function onArchive(id) {
+    if (!(await mutate(() => archiveCard(id)))) return
+    offerUndo({ message: 'Note archived', undo: () => mutate(() => unarchiveCard(id)) })
+  }
+
+  async function onTrashFromBar(id) {
+    if (!(await mutate(() => trashCard(id)))) return
+    offerUndo({ message: 'Note moved to the trash', undo: () => mutate(() => restoreCard(id)) })
+  }
+
+  async function onMerge(targetId, sourceId) {
+    let receipt = null
+    await mutate(async () => {
+      receipt = await mergeCards(targetId, sourceId)
+    })
+    if (!receipt || !alive) return
+
+    offerUndo({ message: 'Notes merged', undo: () => mutate(() => undoMerge(receipt)) })
+  }
+
+  async function onFileIntoBoard(id, boardId) {
+    const board = boardById(boardId)
+    if (!(await mutate(async () => moveCardToDrawer(id, await firstDrawerOf(boardId))))) return
+    offerUndo({
+      message: board ? `Filed into ${board.name}` : 'Note filed',
+      undo: () => mutate(() => moveCardToDrawer(id, null)),
+    })
   }
 
   /** The drawer a note dropped on this project should land in — its first one,
@@ -548,6 +611,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
 
     onStart() {
       closeMenus()
+      dismissUndo()
       const bar = dropBarElement()
       if (bar) bar.hidden = false
       root.querySelector('[data-boards]')?.classList.add('is-awaiting-drop')
@@ -580,11 +644,10 @@ export function mountHome(root, { autoFocus = false } = {}) {
 
       finishDrag()
 
-      if (droppedZone === 'delete') mutate(() => trashCard(id))
-      else if (droppedZone === 'archive') mutate(() => archiveCard(id))
-      else if (board) {
-        mutate(async () => moveCardToDrawer(id, await firstDrawerOf(board.dataset.board)))
-      } else if (target) mutate(() => mergeCards(target.dataset.card, id))
+      if (droppedZone === 'delete') onTrashFromBar(id)
+      else if (droppedZone === 'archive') onArchive(id)
+      else if (board) onFileIntoBoard(id, board.dataset.board)
+      else if (target) onMerge(target.dataset.card, id)
     },
 
     onCancel() {
@@ -610,9 +673,9 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (!form) return
     event.preventDefault()
     const input = form.elements.title
-    const title = input.value
+    const text = input.value
     input.value = ''
-    onCapture(title)
+    onCapture(text)
   }
 
   function onClick(event) {
@@ -644,7 +707,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
         openCard(noteById(id))
         break
       case 'fold':
-        toggleCardOpen(id)
+        setCardFold(id, target.getAttribute('aria-expanded') !== 'true')
         render()
         break
       case 'copy':
@@ -654,7 +717,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
         onMove(id)
         break
       case 'archive':
-        mutate(() => archiveCard(id))
+        onArchive(id)
         break
       case 'delete':
         onDelete(id)
@@ -709,6 +772,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
   return function unmount() {
     alive = false
     clearMerge()
+    dismissUndo()
     drag.destroy()
     root.removeEventListener('submit', onSubmit)
     document.removeEventListener('click', onClick)

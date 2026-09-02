@@ -617,6 +617,38 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* A title you can click to change it — the same idea as a drawer's name. It
+   inherits the heading's own type, so it reads as the title, not a button. */
+.title-btn {
+  padding: 0 0.2rem;
+  margin-left: -0.2rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.title-btn:hover {
+  border-color: var(--rule-strong);
+  background: var(--paper-raised);
+}
+
+.page-head-glyph {
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  cursor: pointer;
+}
+
+.page-head-glyph:hover .board-glyph {
+  outline: 2px solid var(--tint, var(--accent));
+  outline-offset: 2px;
+}
+
 .page-sub {
   margin: 0.1rem 0 0;
   color: var(--ink-faint);
@@ -707,11 +739,21 @@ button {
   font-size: 0.875rem;
 }
 
+/* Masonry, for the same reason the gallery is: quick notes are all different
+   heights now that a short one shows itself rather than folding away, and a
+   grid would size every row to its tallest card. They're never reordered by
+   hand — newest first, always — so nothing depends on the reading order that
+   columns impose. */
 .quick-notes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0.6rem;
-  align-items: start;
+  columns: 15rem;
+  column-gap: 0.6rem;
+}
+
+.quick-notes > * {
+  /* The prefixed one is what older iOS Safari understands. */
+  -webkit-column-break-inside: avoid;
+  break-inside: avoid;
+  margin-bottom: 0.6rem;
 }
 
 .board-grid {
@@ -881,17 +923,89 @@ button {
   background: var(--accent-soft);
 }
 
+/* A picture dragged in from outside the browser lands in whichever drawer it
+   was dropped on — see the file drop in boardView.js. */
+.drawer.is-file-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+}
+
+/* One drawer, on its own, with the width to itself. */
+.drawers.is-focused {
+  display: block;
+  overflow-x: visible;
+}
+
+/* The header is the drawer's drag handle: press and move with a mouse, press
+   and hold with a finger, the same as a card. */
 .drawer-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding-left: 0.25rem;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: pan-y;
 }
 
+.drawer-head[data-drawer-handle] {
+  cursor: grab;
+}
+
+.drawer.is-drawer-dragging {
+  opacity: 0.35;
+  border-style: dashed;
+}
+
+.drag-ghost.drawer-head {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--paper-raised);
+  cursor: grabbing;
+}
+
+/* The name is a button because tapping it is how it gets changed. */
 .drawer-title {
-  font-size: 0.95rem;
   min-width: 0;
+  padding: 0.1rem 0.3rem;
+  margin-left: -0.3rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-family: var(--font-heading);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: left;
   overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.drawer-title:hover {
+  border-color: var(--rule-strong);
+  background: var(--paper-raised);
+}
+
+.drawer-title-input {
+  min-width: 0;
+  flex: 1;
+  padding: 0.1rem 0.3rem;
+  margin-left: -0.3rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-family: var(--font-heading);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.drawer-title-input:focus {
+  outline: none;
 }
 
 .drawer-count {
@@ -906,8 +1020,14 @@ button {
   text-align: center;
 }
 
-.drawer-head .menu {
+/* Everything after this is the right-hand end of the header. */
+.drawer-head > .icon-btn {
   margin-left: auto;
+}
+
+.drawer-head > .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .drawer-cards {
@@ -917,16 +1037,30 @@ button {
   min-height: 3rem;
 }
 
+/* A gallery is masonry: columns of whatever width fits, and each picture at
+   its own height. Cropping every picture to a square made a tidy grid out of
+   pictures that were the point — this keeps them whole, and lets a note with
+   no picture at all sit among them as a block of text. */
 .drawer[data-kind='gallery'] .drawer-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
-  gap: 0.45rem;
-  align-items: start;
+  display: block;
+  columns: 8.5rem;
+  column-gap: 0.45rem;
+  min-height: 3rem;
 }
 
-.drawer[data-kind='gallery'] .card-gallery.is-open,
+.drawer[data-kind='gallery'] .drawer-cards > * {
+  -webkit-column-break-inside: avoid;
+  break-inside: avoid;
+  margin-bottom: 0.45rem;
+}
+
+.drawers.is-focused .drawer[data-kind='gallery'] .drawer-cards {
+  columns: 13rem;
+}
+
+/* The "drop pictures here" line belongs across the drawer, not down one column. */
 .drawer[data-kind='gallery'] .drawer-empty {
-  grid-column: 1 / -1;
+  column-span: all;
 }
 
 .drawer-empty {
@@ -1054,13 +1188,16 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* A folded card is meant to be read, not just identified — so the excerpt gets
+   real room. Only a note long enough to be in the way folds itself away in the
+   first place (see cardStartsOpen), and this is what it looks like when it has. */
 .card-excerpt {
   display: -webkit-box;
-  margin-top: 0.2rem;
+  margin-top: 0.25rem;
   color: var(--ink-muted);
-  font-size: 0.8rem;
-  line-height: 1.4;
-  -webkit-line-clamp: 2;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  -webkit-line-clamp: 5;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1096,7 +1233,8 @@ button {
   flex-shrink: 0;
 }
 
-.card-fold {
+/* The buttons that sit in a card's own corner: read it, copy it. */
+.card-btn {
   display: grid;
   place-items: center;
   width: 1.75rem;
@@ -1110,11 +1248,11 @@ button {
   transition: color 0.15s ease, rotate 0.18s ease;
 }
 
-.card-fold:hover {
+.card-btn:hover {
   color: var(--ink);
 }
 
-.card-fold svg {
+.card-btn svg {
   width: 1.05rem;
   height: 1.05rem;
   fill: none;
@@ -1126,6 +1264,21 @@ button {
 
 .card-fold[aria-expanded='true'] {
   rotate: 180deg;
+}
+
+.card-copy {
+  opacity: 0.65;
+}
+
+.card:hover .card-copy,
+.card-copy:hover,
+.card-copy:focus-visible {
+  opacity: 1;
+}
+
+.card-copy.is-copied {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .card .menu-trigger {
@@ -1228,12 +1381,31 @@ button {
   padding: 0;
 }
 
+/* No aspect-ratio and no cropping: the picture keeps its own shape and the
+   masonry columns absorb the difference. */
 .gallery-image {
   display: block;
   width: 100%;
-  aspect-ratio: 1 / 1;
-  object-fit: cover;
+  height: auto;
+  min-height: 2.5rem;
   background: var(--paper-sunken);
+}
+
+/* A gallery card with words instead of a picture. It has to hold its own next
+   to the photographs, so the words get the serif and the room. */
+.card-gallery.is-text .gallery-caption {
+  padding: 0.7rem 0.75rem 0.8rem;
+}
+
+.card-gallery.is-text .card-title {
+  font-family: var(--font-heading);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.card-gallery.is-text .card-excerpt {
+  -webkit-line-clamp: 8;
 }
 
 .gallery-blank {
@@ -1264,6 +1436,8 @@ button {
   font-size: 0.82rem;
 }
 
+/* Over the picture rather than beside it, and trimmed down: a gallery column
+   is narrow, and three buttons at full size would be most of its width. */
 .card-gallery .card-actions {
   position: absolute;
   top: 0.3rem;
@@ -1271,6 +1445,17 @@ button {
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--paper-raised) 85%, transparent);
   backdrop-filter: blur(4px);
+}
+
+.card-gallery .card-actions .card-btn,
+.card-gallery .card-actions .icon-btn-sm {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.card-gallery .card-actions svg {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 /* ---------------------------------------------------------------
@@ -1410,6 +1595,66 @@ body.is-dragging-card {
   border-color: var(--danger);
   background: var(--danger);
   color: #fff;
+}
+
+/* ---------------------------------------------------------------
+   Undo
+   One line along the bottom, saying what just happened.
+   --------------------------------------------------------------- */
+
+.undo-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  z-index: 130;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.6rem 0.6rem 0.6rem 1rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-md);
+  animation: undo-in 0.18s ease-out;
+}
+
+@keyframes undo-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .undo-toast {
+    animation: none;
+  }
+}
+
+.undo-text {
+  min-width: 0;
+  font-size: 0.875rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undo-btn {
+  flex: none;
+  padding: 0.35rem 0.85rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.undo-btn:hover {
+  background: var(--accent-hover);
 }
 
 /* ---------------------------------------------------------------
@@ -2061,18 +2306,58 @@ body.is-dragging-card {
   box-shadow: 0 0 0 2px var(--paper-raised), 0 0 0 3.5px var(--tint);
 }
 
+.icon-picker {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+}
+
+.icon-picker-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The square *is* the picture: click it to pick one, or drop one on it. */
 .icon-picked {
   display: grid;
   place-items: center;
-  width: 3rem;
-  height: 3rem;
-  margin-bottom: 0.5rem;
+  flex: none;
+  width: 3.25rem;
+  height: 3.25rem;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--tint-soft, var(--accent-soft));
   color: var(--tint, var(--accent));
-  font-size: 1.5rem;
+  font-size: 1.6rem;
   line-height: 1;
   overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+
+.icon-picked:hover {
+  border-color: var(--tint, var(--accent));
+}
+
+.icon-picked.is-dropping {
+  border-style: dashed;
+  border-color: var(--tint, var(--accent));
+  transform: scale(1.05);
+}
+
+/* Everything inside sits in the one cell, so the emoji, the picture and the
+   "nothing here yet" mark can't push each other around. */
+.icon-picked > *,
+.icon-picked::after {
+  grid-area: 1 / 1;
+}
+
+.icon-picked.is-empty::after {
+  content: '＋';
+  color: var(--tint, var(--accent));
+  font-size: 1.2rem;
+  opacity: 0.7;
 }
 
 .icon-picked img {
@@ -2081,31 +2366,12 @@ body.is-dragging-card {
   object-fit: cover;
 }
 
-.emoji-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-}
-
-.emoji-btn {
-  width: 2.1rem;
-  height: 2.1rem;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: none;
-  font-size: 1.05rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.emoji-btn:hover {
-  background: var(--paper-sunken);
-}
-
-.emoji-btn.is-picked {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+/* Wide enough for an emoji and no wider — it holds exactly one. */
+.emoji-input {
+  width: 5rem;
+  text-align: center;
+  font-size: 1.25rem;
+  line-height: 1.4;
 }
 
 .icon-file {
@@ -2282,7 +2548,10 @@ body.is-dragging-card {
     justify-content: flex-end;
   }
 
-  .quick-notes,
+  .quick-notes {
+    columns: 1;
+  }
+
   .board-grid {
     grid-template-columns: 1fr;
   }
