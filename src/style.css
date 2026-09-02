@@ -470,6 +470,16 @@ button {
   color: var(--accent);
 }
 
+.link-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.link-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+
 .link-btn svg {
   width: 1rem;
   height: 1rem;
@@ -1245,6 +1255,11 @@ button {
   cursor: zoom-in;
 }
 
+/* A picture inside a link card is the link's own — it navigates, not zooms. */
+.card-note a > img {
+  cursor: pointer;
+}
+
 /* Grabbing a picture starts the card's own drag, never the browser's. */
 .card img {
   -webkit-user-drag: none;
@@ -1255,6 +1270,7 @@ button {
   margin: 0.5rem 0 0;
   color: var(--ink-faint);
   font-size: 0.72rem;
+  text-align: right;
 }
 
 .card-skeleton {
@@ -1514,20 +1530,21 @@ body.is-dragging-card {
   transform: scale(1.03);
 }
 
-/* The bar that appears along the bottom while something is in the air. */
+/* The bar that appears along the top while something is in the air — clear of
+   any bottom nav, so a drop target is never crammed in beside it. */
 .drop-bar {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  top: 0;
   z-index: 150;
   display: flex;
   gap: 0.5rem;
-  padding: 0.6rem max(0.75rem, env(safe-area-inset-left))
-    calc(0.6rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-right));
+  padding: calc(0.6rem + env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-left))
+    0.6rem max(0.75rem, env(safe-area-inset-right));
   background: color-mix(in srgb, var(--paper) 92%, transparent);
   backdrop-filter: blur(10px);
-  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
   pointer-events: none;
 }
 
@@ -1570,10 +1587,9 @@ body.is-dragging-card {
 }
 
 /* The bar at the foot of a board, always there — no top header any more, so
-   this is how you get from one project to the next (see main.js). Archive
-   and Delete share the strip but only appear while a card is being dragged;
-   the rest of the time it's just the projects, one tap to switch, or one
-   drop to file a card into. */
+   this is how you get from one project to the next (see main.js): one tap to
+   switch, or one drop to file a card into. Archive and Delete live in
+   `.drop-bar` up top instead of sharing this strip. */
 .project-bar {
   position: fixed;
   left: 0;
@@ -1595,18 +1611,6 @@ body.is-dragging-card {
    drop-only bars elsewhere that only appear mid-drag. */
 .page.has-project-bar {
   padding-bottom: 4.5rem;
-}
-
-.project-bar .drop-zone {
-  display: none;
-  flex: none;
-  min-width: 6rem;
-  min-height: 2.35rem;
-  pointer-events: none;
-}
-
-.project-bar.is-dragging-card .drop-zone {
-  display: flex;
 }
 
 .project-bar-scroll {
@@ -2077,6 +2081,24 @@ body.is-dragging-card {
   height: 100%;
   opacity: 0;
   cursor: pointer;
+}
+
+.note-due-time-input {
+  height: 1.9rem;
+  padding: 0 0.35rem;
+  margin-left: 0.15rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 0.75rem;
+}
+
+.note-due-time-input:hover,
+.note-due-time-input:focus-visible {
+  color: var(--ink);
+  border-color: var(--accent);
 }
 
 .note-due-clear {

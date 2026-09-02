@@ -305,5 +305,12 @@ export function dressNotes(root) {
   for (const anchor of root.querySelectorAll('.card-note a[href]')) {
     anchor.target = '_blank'
     anchor.rel = 'noopener noreferrer'
+
+    // A link whose whole content is a picture is a preview card (see
+    // noteEditor.js's decorateLinkCard) — give it the same compact, bordered
+    // look here so a saved note reads the same as it did while being written.
+    if (anchor.children.length === 1 && anchor.firstElementChild.tagName === 'IMG') {
+      anchor.classList.add('note-link-card')
+    }
   }
 }

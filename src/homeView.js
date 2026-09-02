@@ -51,6 +51,16 @@ import { escapeHtml, plural } from './format'
 import { supabase } from './supabaseClient'
 import { cycleTheme, paintThemeButton } from './theme'
 import { installAvailable, onInstallAvailabilityChange, promptInstall } from './installPrompt'
+import {
+  remindersSupported,
+  remindersPermission,
+  remindersEnabled,
+  remindersBusy,
+  enableReminders,
+  disableReminders,
+  onReminderStateChange,
+  refreshReminderState,
+} from './push'
 
 const ICONS = {
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
@@ -59,6 +69,7 @@ const ICONS = {
   archive: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="4" rx="1.2"/><path d="M4.75 8.5v9.25a1.75 1.75 0 0 0 1.75 1.75h11a1.75 1.75 0 0 0 1.75-1.75V8.5M10 12.5h4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
   check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
+  bell: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12M7 17v-5.5a5 5 0 0 1 10 0V17M10.5 20a1.7 1.7 0 0 0 3 0"/></svg>`,
 }
 
 /** How long a card has to be held over another before the two would merge. */
@@ -250,6 +261,15 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (themeButton) paintThemeButton(themeButton)
   }
 
+  /** What the reminders button says — busy while a request is in flight,
+   *  "blocked" rather than an action once the browser has said no for good,
+   *  otherwise which way a tap would flip it. */
+  function reminderLabel() {
+    if (remindersBusy()) return 'Reminders…'
+    if (remindersPermission() === 'denied') return 'Reminders blocked'
+    return remindersEnabled() ? 'Reminders on' : 'Enable reminders'
+  }
+
   /** No top header any more (see main.js) — this is where Trash, the theme
    *  toggle, install and logout live instead: a quiet row at the foot of
    *  Home rather than a bar over every screen. */
@@ -267,6 +287,17 @@ export function mountHome(root, { autoFocus = false } = {}) {
           <button type="button" class="link-btn" data-act="show-trash">${ICONS.trash} Trash</button>
         </div>
         <div class="home-foot-row">
+          ${
+            remindersSupported()
+              ? `<button
+                   type="button"
+                   class="link-btn"
+                   data-act="reminders-toggle"
+                   ${remindersBusy() ? 'disabled' : ''}
+                   aria-pressed="${String(remindersEnabled())}"
+                 >${ICONS.bell} ${reminderLabel()}</button>`
+              : ''
+          }
           ${
             installAvailable()
               ? `<button type="button" class="link-btn" data-act="install-app">Install</button>`
@@ -904,6 +935,10 @@ export function mountHome(root, { autoFocus = false } = {}) {
       case 'install-app':
         promptInstall()
         break
+      case 'reminders-toggle':
+        if (remindersEnabled()) disableReminders()
+        else enableReminders()
+        break
       case 'logout':
         supabase.auth.signOut()
         break
@@ -937,6 +972,14 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (state.status === 'ready') render()
   })
 
+  // Same idea for reminders: enabling/disabling is a round trip through the
+  // service worker and the database, and permission can also change from
+  // outside the app entirely (the phone's own Settings).
+  const stopWatchingReminders = onReminderStateChange(() => {
+    if (state.status === 'ready') render()
+  })
+  refreshReminderState()
+
   load()
 
   return function unmount() {
@@ -946,6 +989,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     drag.destroy()
     boardDrag.destroy()
     stopWatchingInstall()
+    stopWatchingReminders()
     root.removeEventListener('submit', onSubmit)
     document.removeEventListener('click', onClick)
     document.removeEventListener('keydown', onKeydown)

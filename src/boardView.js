@@ -347,10 +347,9 @@ export function mountBoard(root, boardId) {
    * The bottom bar, always there while a board is open: every other project,
    * as a row of glyphs to switch between — no top header any more, so this is
    * how you get from one project to the next without going home first (see
-   * main.js). Archive and Delete live in the same strip, ahead of the
-   * projects, shown only while a card is actually being dragged — the same
-   * gesture that switches projects with a tap files a card into one by
-   * dropping it there.
+   * main.js). Dropping a card on a chip files it into that project; dropping
+   * it on Archive or Delete instead is `dropBar()`, up at the top out of the
+   * way of this nav.
    */
   function projectBar() {
     if (state.boards.length < 2) return ''
@@ -374,9 +373,19 @@ export function mountBoard(root, boardId) {
 
     return `
       <div class="project-bar" data-project-bar>
+        <div class="project-bar-scroll">${chips}</div>
+      </div>
+    `
+  }
+
+  /** The bar that appears along the top while a card is in the air — kept
+   *  clear of the project bar at the foot so a drop target is never crammed
+   *  in beside the nav that switches projects. */
+  function dropBar() {
+    return `
+      <div class="drop-bar" data-drop-bar hidden aria-hidden="true">
         <div class="drop-zone" data-zone="archive">${ICONS.archive}<span>Archive</span></div>
         <div class="drop-zone drop-zone-danger" data-zone="delete">${ICONS.trash}<span>Delete</span></div>
-        <div class="project-bar-scroll">${chips}</div>
       </div>
     `
   }
@@ -443,7 +452,7 @@ export function mountBoard(root, boardId) {
     }
 
     const hasProjectBar = state.boards.length >= 2
-    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}${hasProjectBar ? ' has-project-bar' : ''}">${head()}${body}</section>${projectBar()}`
+    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}${hasProjectBar ? ' has-project-bar' : ''}">${head()}${body}</section>${projectBar()}${dropBar()}`
     hydrateNoteImages(root)
     dressNotes(root)
 
@@ -873,17 +882,14 @@ export function mountBoard(root, boardId) {
      --------------------------------------------------------------- */
 
   function dropBarElement() {
-    return root.querySelector('[data-project-bar]')
+    return root.querySelector('[data-drop-bar]')
   }
 
-  /** Which bar zone the pointer is over, if any — only while a card is
-   *  actually in the air; the bar itself is always there (it's how projects
-   *  get switched), so Archive/Delete only count as targets during a drag. */
+  /** Which bar zone the pointer is over, if any — the bar itself only shows
+   *  while a card is actually in the air. */
   function zoneAt(x, y) {
-    if (!drag.isDragging()) return null
-
     const bar = dropBarElement()
-    if (!bar) return null
+    if (!bar || bar.hidden) return null
 
     const rect = bar.getBoundingClientRect()
     if (y < rect.top) return null
@@ -1077,7 +1083,8 @@ export function mountBoard(root, boardId) {
     onStart() {
       closeMenus()
       dismissUndo()
-      dropBarElement()?.classList.add('is-dragging-card')
+      const bar = dropBarElement()
+      if (bar) bar.hidden = false
     },
 
     onMove(x, y, element) {
@@ -1132,7 +1139,8 @@ export function mountBoard(root, boardId) {
     clearMerge()
     setZone(null)
     setProjectTarget(null)
-    dropBarElement()?.classList.remove('is-dragging-card')
+    const bar = dropBarElement()
+    if (bar) bar.hidden = true
     for (const element of root.querySelectorAll('.drawer.is-dropping')) {
       element.classList.remove('is-dropping')
     }

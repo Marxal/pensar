@@ -219,6 +219,14 @@ export function openNote({ card = null, drawerId = null } = {}) {
               <span class="note-due-label" data-due-label hidden></span>
               <input type="date" class="note-due-input" data-due-input aria-label="Due date">
             </label>
+            <input
+              type="time"
+              class="note-due-time-input"
+              data-due-time-input
+              aria-label="Reminder time"
+              title="Reminder time (defaults to 9:00 AM)"
+              hidden
+            >
             <button type="button" class="note-due-clear" data-due-clear aria-label="Clear due date" title="Clear due date" hidden>${ICONS.close}</button>
           </div>
 
@@ -241,6 +249,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     const statusEl = backdrop.querySelector('[data-status]')
     const errorEl = backdrop.querySelector('[data-error]')
     const dueInput = backdrop.querySelector('[data-due-input]')
+    const dueTimeInput = backdrop.querySelector('[data-due-time-input]')
     const dueLabel = backdrop.querySelector('[data-due-label]')
     const dueClear = backdrop.querySelector('[data-due-clear]')
     const imageInput = backdrop.querySelector('[data-image-input]')
@@ -267,6 +276,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     decorateAllLinkCards(bodyEl)
     hydrateNoteImages(bodyEl)
     dueInput.value = card?.due_date ?? ''
+    dueTimeInput.value = card?.due_time ?? ''
 
     const dueChip = backdrop.querySelector('[data-due]')
 
@@ -274,6 +284,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
       const info = dueInfo(dueInput.value)
       dueLabel.hidden = !info
       dueLabel.textContent = info?.label ?? ''
+      dueTimeInput.hidden = !info
       dueClear.hidden = !info
       dueChip.classList.toggle('is-set', Boolean(info))
     }
@@ -321,6 +332,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         title: titleEl.textContent.trim(),
         body_markdown: markdownFromEditor(bodyEl),
         due_date: dueInput.value || null,
+        due_time: dueInput.value ? dueTimeInput.value || null : null,
         priority,
       }
     }
@@ -335,6 +347,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         saved.title === fields.title &&
         saved.body_markdown === fields.body_markdown &&
         (saved.due_date ?? null) === fields.due_date &&
+        (saved.due_time ?? null) === fields.due_time &&
         (saved.priority ?? null) === fields.priority
       )
     }
@@ -674,8 +687,11 @@ export function openNote({ card = null, drawerId = null } = {}) {
       markDirty()
     })
 
+    dueTimeInput.addEventListener('change', markDirty)
+
     dueClear.addEventListener('click', () => {
       dueInput.value = ''
+      dueTimeInput.value = ''
       paintDue()
       markDirty()
     })

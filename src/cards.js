@@ -13,6 +13,7 @@
 // can still recover it.
 
 import { supabase } from './supabaseClient'
+import { computeRemindAt } from './format'
 
 export const PRIORITIES = ['low', 'medium', 'high']
 
@@ -23,7 +24,7 @@ export const PRIORITY_LABELS = {
 }
 
 const COLUMNS =
-  'id, board_id, drawer_id, position, title, body_markdown, due_date, priority, done, created_at, updated_at'
+  'id, board_id, drawer_id, position, title, body_markdown, due_date, due_time, priority, done, created_at, updated_at'
 
 const live = (query) => query.is('archived_at', null).is('deleted_at', null)
 
@@ -84,8 +85,17 @@ async function lastPosition(drawerId) {
  * the note editor saves as you type, and a save that carries just the title
  * shouldn't blank the note underneath it.
  */
-const EDITABLE = ['title', 'body_markdown', 'due_date', 'priority', 'done']
+const EDITABLE = ['title', 'body_markdown', 'due_date', 'due_time', 'priority', 'done']
 
+/**
+ * `remind_at` is never set directly — it's `due_date` + `due_time` (see
+ * computeRemindAt), recomputed here whenever either travels through this
+ * patch, which every caller that touches one already sends both of (the
+ * editor's due-date row saves as one field; `mergeCards` below does too). A
+ * reminder that already fired arms itself again the moment the due date
+ * moves, with nothing needing to notice and reset it — see the reminders
+ * migration's own note on `reminder_fired_for`.
+ */
 function cardPatch(fields) {
   const patch = {}
   for (const key of EDITABLE) {
@@ -96,6 +106,9 @@ function cardPatch(fields) {
     else if (key === 'done') patch.done = Boolean(value)
     else patch[key] = value || null
   }
+
+  if ('due_date' in fields) patch.remind_at = computeRemindAt(fields.due_date, fields.due_time)
+
   return patch
 }
 
@@ -281,11 +294,15 @@ function strongerPriority(a, b) {
   return (PRIORITY_RANK[a] ?? 0) >= (PRIORITY_RANK[b] ?? 0) ? a : b
 }
 
-/** The sooner of two due dates, either of which may be missing. */
-function soonerDate(a, b) {
-  if (!a) return b ?? null
-  if (!b) return a
-  return a <= b ? a : b
+/** The sooner of two due dates, either of which may be missing — carrying
+ *  its own due_time along, since a date without its time is a different
+ *  reminder. */
+function soonerDue(a, b) {
+  if (!a.due_date) return { due_date: b.due_date ?? null, due_time: b.due_date ? b.due_time ?? null : null }
+  if (!b.due_date) return { due_date: a.due_date, due_time: a.due_time ?? null }
+  return a.due_date <= b.due_date
+    ? { due_date: a.due_date, due_time: a.due_time ?? null }
+    : { due_date: b.due_date, due_time: b.due_time ?? null }
 }
 
 /**
@@ -327,13 +344,17 @@ export async function mergeCards(targetId, sourceId) {
     title: target.title,
     body_markdown: target.body_markdown,
     due_date: target.due_date ?? null,
+    due_time: target.due_time ?? null,
     priority: target.priority ?? null,
   }
+
+  const due = soonerDue(target, source)
 
   await updateCard(targetId, {
     title: target.title.trim() || sourceTitle,
     body_markdown: body,
-    due_date: soonerDate(target.due_date, source.due_date),
+    due_date: due.due_date,
+    due_time: due.due_time,
     priority: strongerPriority(target.priority, source.priority),
   })
 

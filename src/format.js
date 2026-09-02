@@ -88,3 +88,27 @@ export function dueInfo(value) {
 
   return { label, overdue: days < 0, today: days === 0 }
 }
+
+/** Default reminder time when a due date is set with no time picked — late
+ *  enough to have woken up, early enough that the day is still ahead. */
+const DEFAULT_REMINDER_TIME = '09:00'
+
+/**
+ * The instant a reminder should fire, as an ISO string for `remind_at`, from
+ * a `due_date` (`YYYY-MM-DD`) and an optional `due_time` (`HH:MM`). Null when
+ * there's no due date — no due date, no reminder.
+ *
+ * Built with `new Date(year, month, day, hour, minute)` rather than a string
+ * Date() would parse as UTC, for the same reason `parseDateOnly` is — a wall
+ * clock reading is only what it looks like in the *device's own* timezone,
+ * which is the one thing a bare `YYYY-MM-DD` and `HH:MM` never carry with
+ * them. Recomputed and re-sent on every save, so editing either field just
+ * naturally arms the reminder for the new moment.
+ */
+export function computeRemindAt(dueDate, dueTime) {
+  if (!dueDate) return null
+
+  const [year, month, day] = dueDate.split('-').map(Number)
+  const [hour, minute] = (dueTime || DEFAULT_REMINDER_TIME).split(':').map(Number)
+  return new Date(year, month - 1, day, hour, minute, 0, 0).toISOString()
+}

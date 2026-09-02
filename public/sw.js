@@ -1,4 +1,5 @@
-// pensar's service worker has exactly one job: catching what the phone shares.
+// pensar's service worker has two jobs: catching what the phone shares, and
+// showing a reminder push when one arrives.
 //
 // The Web Share Target API delivers a share as a POST at the URL named in the
 // manifest, and a page can't answer a POST aimed at itself — only a service
@@ -6,6 +7,11 @@
 // somewhere the app can reach them, and sends the browser on to `#/share?…`
 // with the words in the query and a key per picture. src/share.js takes it
 // from there.
+//
+// A push arrives the same way niu's does (see that repo's public/sw.js) —
+// `pensar-send-reminder` (supabase/functions/pensar-send-reminder/index.ts)
+// sends `{ title, body, tag, url }`, and `notificationclick` opens the app on
+// whichever board the card is on, or Home for a quick note.
 //
 // Everything else is deliberately left alone. Nothing is precached and no
 // other request is touched, because pensar is an always-online app — an
@@ -68,3 +74,65 @@ async function receiveShare(request) {
   const target = new URL(`#/share?${params.toString()}`, self.registration.scope)
   return Response.redirect(target.href, 303)
 }
+
+/* ---------------------------------------------------------------
+   Reminders
+   --------------------------------------------------------------- */
+
+self.addEventListener('push', (event) => {
+  let message = {}
+  try {
+    message = event.data ? event.data.json() : {}
+  } catch {
+    // Not JSON. Fall through to the generic notification below.
+  }
+
+  const title = message.title || 'pensar'
+  const body = message.body || 'A card is due.'
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: './icons/icon-192.png',
+      badge: './icons/icon-192.png',
+      // Replaces an earlier notification for the same card rather than
+      // stacking a second one under it.
+      tag: message.tag || 'pensar-reminder',
+      renotify: Boolean(message.tag),
+      data: { url: message.url || './' },
+      vibrate: [80, 40, 80],
+    })
+  )
+})
+
+/**
+ * Tapping a notification opens the app on the card's board (or Home, for a
+ * quick note) — see `buildMessage` in pensar-send-reminder/index.ts for
+ * where `url` comes from.
+ *
+ * Focusing a window that's already open matters more than it sounds: opening
+ * a second one leaves the person with two copies of an installed app and no
+ * idea which is which. So an existing window is found first, and a new one
+ * is only opened as a last resort — same reasoning as receiveShare() above
+ * not hard-coding a path, since nothing here knows the folder it's served
+ * from except its own scope.
+ */
+async function openReminder(path) {
+  const target = new URL(path, self.registration.scope)
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+
+  for (const client of windows) {
+    if (client.url.startsWith(self.registration.scope)) {
+      if ('navigate' in client) await client.navigate(target.href)
+      if ('focus' in client) return await client.focus()
+      return
+    }
+  }
+
+  await self.clients.openWindow(target.href)
+}
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil(openReminder(event.notification.data?.url || './'))
+})
