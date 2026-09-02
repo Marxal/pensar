@@ -1,6 +1,7 @@
 import './style.css'
 import { supabase } from './supabaseClient'
 import { initTheme, cycleTheme, paintThemeButton } from './theme'
+import './installPrompt'
 import { captureShare } from './share'
 import { mountHome } from './homeView'
 import { mountBoard } from './boardView'
@@ -99,50 +100,6 @@ function parseRoute() {
   return { name: 'home' }
 }
 
-/* ---------------------------------------------------------------
-   Install prompt
-   Chrome/Edge (desktop + Android) fire beforeinstallprompt and let us
-   trigger it from our own button. iOS has no such event — there, "install"
-   only ever happens via Safari's Share ▸ Add to Home Screen, which the
-   manifest + apple-touch-icon meta tags in index.html already support; no
-   JS-driven prompt is possible there, so the button just never appears.
-   --------------------------------------------------------------- */
-
-let deferredInstallPrompt = null
-
-window.addEventListener('beforeinstallprompt', (event) => {
-  event.preventDefault()
-  deferredInstallPrompt = event
-  document.querySelector('#install-app')?.removeAttribute('hidden')
-})
-
-window.addEventListener('appinstalled', () => {
-  deferredInstallPrompt = null
-  document.querySelector('#install-app')?.setAttribute('hidden', '')
-})
-
-function mountInstallButton(button) {
-  if (!button) return
-  if (deferredInstallPrompt) button.removeAttribute('hidden')
-
-  button.addEventListener('click', async () => {
-    if (!deferredInstallPrompt) return
-    deferredInstallPrompt.prompt()
-    await deferredInstallPrompt.userChoice
-    deferredInstallPrompt = null
-    button.setAttribute('hidden', '')
-  })
-}
-
-/** Highlight whichever topbar link owns the current route — a single board and
- *  the archive both belong to Home, which is where they're reached from. */
-function paintNav(routeName) {
-  const group = routeName === 'trash' ? 'trash' : 'home'
-  for (const link of document.querySelectorAll('.topbar-link')) {
-    link.classList.toggle('is-active', link.dataset.route === group)
-  }
-}
-
 function mountRoute() {
   const view = document.querySelector('#view')
   if (!view) return
@@ -156,7 +113,6 @@ function mountRoute() {
   }
 
   const route = parseRoute()
-  paintNav(route.name)
 
   const key = `${route.name}:${route.id ?? ''}`
   if (key === currentRoute && !isNewNoteShortcut) return
@@ -174,35 +130,17 @@ function mountRoute() {
           : mountHome(view, { autoFocus: isNewNoteShortcut })
 }
 
+// No top header any more — opening a card is the point, and a bar across
+// every screen was in the way of that more than it was helping. Trash,
+// logout and the theme toggle moved to a quiet row at the foot of Home
+// (see homeView.js); a board gets its own way to move between projects
+// instead (see boardView.js's project bar).
 function renderApp() {
   app.innerHTML = `
     <div class="app-shell">
-      <header class="app-topbar">
-        <div class="topbar-inner">
-          <span class="brand">pensar</span>
-          <nav class="topbar-nav">
-            <a class="topbar-link" data-route="home" href="#/">Home</a>
-            <a class="topbar-link" data-route="trash" href="#/trash">Trash</a>
-          </nav>
-          <div class="topbar-actions">
-            <button class="text-btn" id="install-app" hidden>Install</button>
-            <button class="icon-btn" id="theme-toggle"></button>
-            <span class="topbar-divider"></span>
-            <button class="text-btn" id="logout">Log out</button>
-          </div>
-        </div>
-      </header>
-
       <main class="app-content" id="view"></main>
     </div>
   `
-
-  mountThemeToggle(document.querySelector('#theme-toggle'))
-  mountInstallButton(document.querySelector('#install-app'))
-
-  document.querySelector('#logout').addEventListener('click', async () => {
-    await supabase.auth.signOut()
-  })
 
   currentRoute = null
   mountRoute()

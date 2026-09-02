@@ -150,6 +150,20 @@ export async function setBoardStyle(id, style) {
   return data
 }
 
+/**
+ * Write the whole active board order down, `ids` being them in the order
+ * they should show. Same shape as drawers.js's saveDrawerOrder — renumbered
+ * from zero rather than trading two positions, since only the order matters.
+ */
+export async function saveBoardOrder(ids) {
+  const results = await Promise.all(
+    ids.map((id, position) => supabase.from('pensar_boards').update({ position }).eq('id', id))
+  )
+
+  const failed = results.find((result) => result.error)
+  if (failed) throw failed.error
+}
+
 export async function archiveBoard(id) {
   const { error } = await supabase
     .from('pensar_boards')

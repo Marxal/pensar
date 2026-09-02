@@ -19,7 +19,7 @@ import {
   trashCard,
 } from './cards'
 import { pushBackHandler } from './backstack'
-import { dueInfo } from './format'
+import { dueInfo, relativeTime } from './format'
 import { openLightbox } from './lightbox'
 import { linkifyAtCaret, linkifyTree } from './linkify'
 import { fetchLinkPreview } from './linkPreview'
@@ -183,6 +183,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         </header>
 
         <div class="note-scroll">
+          <p class="note-edited" data-edited hidden></p>
           <div
             class="note-title"
             contenteditable="true"
@@ -245,6 +246,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     const imageInput = backdrop.querySelector('[data-image-input]')
     const menuTrigger = backdrop.querySelector('[data-menu]')
     const menuList = menuTrigger.nextElementSibling
+    const editedEl = backdrop.querySelector('[data-edited]')
 
     // iOS doesn't shrink the layout viewport when the keyboard comes up, so a
     // sheet pinned to the viewport would hide its own toolbar behind the keys.
@@ -290,6 +292,12 @@ export function openNote({ card = null, drawerId = null } = {}) {
       )
     }
 
+    /** A note that's never been written has nothing to date yet. */
+    function paintEdited() {
+      editedEl.hidden = !saved?.updated_at
+      editedEl.textContent = saved?.updated_at ? `Edited ${relativeTime(saved.updated_at)}` : ''
+    }
+
     function setStatus(text) {
       statusEl.textContent = text ?? ''
     }
@@ -302,6 +310,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     paintDue()
     paintPriority()
     paintEmpty()
+    paintEdited()
 
     /* -------------------------------------------------------------
        Saving
@@ -336,6 +345,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         changed = true
         setError(null)
         setStatus('Saved')
+        paintEdited()
         return true
       } catch (error) {
         setStatus('')

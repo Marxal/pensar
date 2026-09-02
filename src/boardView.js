@@ -26,6 +26,7 @@ import {
   deleteDrawer,
   moveDrawer,
   saveDrawerOrder,
+  FIRST_DRAWER,
 } from './drawers'
 import {
   listCards,
@@ -45,7 +46,7 @@ import { openBoardDialog, openConfirm, openDrawerDialog, openMovePicker } from '
 import { openNote } from './noteEditor'
 import { openLightbox } from './lightbox'
 import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
-import { renderBoardGlyph } from './boardStyle'
+import { boardColour, renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { signImages, looksLikeImage, uploadNoteImage } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
@@ -67,6 +68,13 @@ const ICONS = {
 
 /** How long a card has to be held over another before the two would merge. */
 const MERGE_DWELL_MS = 520
+
+/** Below this width, "focus one drawer" gives way to "expand every note in
+ *  this drawer" — a phone already shows drawers one at a time, stacked, so
+ *  focusing one of them buys nothing there. */
+function isPhone() {
+  return window.matchMedia('(max-width: 40rem)').matches
+}
 
 /**
  * Render one board into `root`. Returns an unmount function that tears down
@@ -96,6 +104,7 @@ export function mountBoard(root, boardId) {
   let mergeCandidate = null
   let mergeTimer = null
   let fileTarget = null
+  let projectTarget = null
 
   // Pictures chosen with the "Add pictures" button. It lives on the body
   // rather than inside the page so that a re-render mid-pick can't take the
@@ -166,26 +175,74 @@ export function mountBoard(root, boardId) {
             >${escapeHtml(drawer.name)}</button>`
   }
 
+  /** A tick list splits into what's still open and what's done, so a long
+   *  list doesn't bury today's items under everything ever finished. Other
+   *  drawer shapes have no "done" of their own and stay a single run. */
+  function cardListMarkup(cards, drawer, crowded) {
+    const draw = (card) =>
+      renderCard(card, {
+        kind: drawer.kind,
+        expanded: cardStartsOpen(card, { kind: drawer.kind, crowded }),
+      })
+
+    if (drawer.kind !== 'list') return cards.map(draw).join('')
+
+    const open = cards.filter((card) => !card.done)
+    const done = cards.filter((card) => card.done)
+    if (!done.length) return open.map(draw).join('')
+
+    return `
+      ${open.map(draw).join('')}
+      <p class="list-divider">Completed · ${done.length}</p>
+      ${done.map(draw).join('')}
+    `
+  }
+
   function drawerSection(drawer, index) {
     const cards = cardsIn(drawer.id)
     const crowded = cards.length > CROWDED_AT
     const focused = state.focus === drawer.id
+
+    let expandControl = ''
+    if (isPhone()) {
+      if (cards.length) {
+        const allOpen = cards.every((card) =>
+          cardStartsOpen(card, { kind: drawer.kind, crowded })
+        )
+        expandControl = `
+          <button
+            type="button"
+            class="icon-btn icon-btn-sm"
+            data-act="drawer-expand-all"
+            data-drawer="${drawer.id}"
+            data-no-drag
+            aria-pressed="${String(allOpen)}"
+            aria-label="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+            title="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+          >${allOpen ? ICONS.collapse : ICONS.expand}</button>
+        `
+      }
+    } else {
+      expandControl = `
+        <button
+          type="button"
+          class="icon-btn icon-btn-sm"
+          data-act="drawer-focus"
+          data-drawer="${drawer.id}"
+          data-no-drag
+          aria-pressed="${String(focused)}"
+          aria-label="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
+          title="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
+        >${focused ? ICONS.collapse : ICONS.expand}</button>
+      `
+    }
 
     return `
       <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}">
         <header class="drawer-head"${state.focus ? '' : ' data-drawer-handle'}>
           ${drawerTitle(drawer)}
           <span class="drawer-count">${cards.length}</span>
-          <button
-            type="button"
-            class="icon-btn icon-btn-sm"
-            data-act="drawer-focus"
-            data-drawer="${drawer.id}"
-            data-no-drag
-            aria-pressed="${String(focused)}"
-            aria-label="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
-            title="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
-          >${focused ? ICONS.collapse : ICONS.expand}</button>
+          ${expandControl}
           <div class="menu">
             <button
               type="button"
@@ -208,14 +265,7 @@ export function mountBoard(root, boardId) {
         </header>
 
         <div class="drawer-cards" data-cards>
-          ${cards
-            .map((card) =>
-              renderCard(card, {
-                kind: drawer.kind,
-                expanded: cardStartsOpen(card, { kind: drawer.kind, crowded }),
-              })
-            )
-            .join('')}
+          ${cardListMarkup(cards, drawer, crowded)}
           <p class="drawer-empty"${cards.length ? ' hidden' : ''}>
             ${drawer.kind === 'gallery' ? 'Drop pictures here' : 'Nothing here yet'}
           </p>
@@ -293,16 +343,56 @@ export function mountBoard(root, boardId) {
     `
   }
 
-  function dropBar() {
+  /**
+   * The bottom bar, always there while a board is open: every other project,
+   * as a row of glyphs to switch between — no top header any more, so this is
+   * how you get from one project to the next without going home first (see
+   * main.js). Archive and Delete live in the same strip, ahead of the
+   * projects, shown only while a card is actually being dragged — the same
+   * gesture that switches projects with a tap files a card into one by
+   * dropping it there.
+   */
+  function projectBar() {
+    if (state.boards.length < 2) return ''
+
+    const chips = state.boards
+      .map((board) => {
+        const current = board.id === boardId
+        return `
+          <button
+            type="button"
+            class="project-chip"
+            data-board="${board.id}"
+            ${current ? 'data-current' : 'data-act="switch-board"'}
+            aria-current="${String(current)}"
+            aria-label="${current ? `${escapeHtml(board.name)} (this project)` : `Switch to ${escapeHtml(board.name)}`}"
+            title="${escapeHtml(board.name)}"
+          >${renderBoardGlyph(board, state.images, { size: 'sm' })}</button>
+        `
+      })
+      .join('')
+
     return `
-      <div class="drop-bar" data-drop-bar hidden aria-hidden="true">
+      <div class="project-bar" data-project-bar>
         <div class="drop-zone" data-zone="archive">${ICONS.archive}<span>Archive</span></div>
         <div class="drop-zone drop-zone-danger" data-zone="delete">${ICONS.trash}<span>Delete</span></div>
+        <div class="project-bar-scroll">${chips}</div>
       </div>
     `
   }
 
+  /** The board's colour washes the page it opens onto, not just its tile on
+   *  Home — picked once, felt every time you're inside it. Set on the body
+   *  rather than the page section so it can bleed to the edges of the
+   *  viewport instead of stopping at the centred column's width. */
+  function paintPageTint() {
+    if (state.board) document.body.dataset.tint = boardColour(state.board)
+    else delete document.body.dataset.tint
+  }
+
   function render() {
+    paintPageTint()
+
     if (state.status === 'missing') {
       root.innerHTML = `
         <section class="page">
@@ -352,7 +442,8 @@ export function mountBoard(root, boardId) {
       `
     }
 
-    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}">${head()}${body}</section>${dropBar()}`
+    const hasProjectBar = state.boards.length >= 2
+    root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}${hasProjectBar ? ' has-project-bar' : ''}">${head()}${body}</section>${projectBar()}`
     hydrateNoteImages(root)
     dressNotes(root)
 
@@ -395,7 +486,7 @@ export function mountBoard(root, boardId) {
       if (state.focus && !state.drawers.some((drawer) => drawer.id === state.focus)) {
         state.focus = null
       }
-      paintBoardIcon()
+      paintBoardIcons()
     } catch (error) {
       if (!alive) return
       state.status = 'error'
@@ -404,18 +495,23 @@ export function mountBoard(root, boardId) {
     render()
   }
 
-  /** The board's own icon, which is drawn straight into the header rather than
-   *  hydrated afterwards like the pictures on the cards. */
-  async function paintBoardIcon() {
-    if (!state.board?.icon_path) return
+  /** Board icons, drawn straight into the header and the project bar's chips
+   *  rather than hydrated afterwards like the pictures on the cards. Covers
+   *  every project, not just this one, now that the project bar shows them
+   *  all — `state.board` is included too in case it's archived and so
+   *  missing from `state.boards`, which only lists active ones. */
+  async function paintBoardIcons() {
+    const paths = [state.board?.icon_path, ...state.boards.map((board) => board.icon_path)].filter(
+      Boolean
+    )
+    if (!paths.length) return
 
-    const links = await signImages([state.board.icon_path])
+    const links = await signImages(paths)
     if (!alive) return
 
-    const url = links.get(state.board.icon_path)
-    if (!url || url === state.images.get(state.board.icon_path)) return
+    const isNew = paths.some((path) => links.get(path) !== state.images.get(path))
     state.images = links
-    render()
+    if (isNew) render()
   }
 
   /** Run a mutation, then reload. Errors surface in the banner. Reports
@@ -597,6 +693,34 @@ export function mountBoard(root, boardId) {
     offerUndo({ message: 'Notes merged', undo: () => mutate(() => undoMerge(receipt)) })
   }
 
+  /** The drawer a card dropped on another project should land in — its
+   *  first one, made on the spot if that project somehow has none. Same
+   *  rule as homeView.js's version of this, for a card filed from Home. */
+  async function firstDrawerOf(targetBoardId) {
+    const existing = state.allDrawers
+      .filter((drawer) => drawer.board_id === targetBoardId)
+      .sort((a, b) => a.position - b.position)[0]
+    if (existing) return existing.id
+
+    const created = await createDrawer(targetBoardId, FIRST_DRAWER)
+    return created.id
+  }
+
+  async function onFileIntoBoard(id, targetBoardId) {
+    const card = cardById(id)
+    if (!card) return
+    const from = card.drawer_id
+    const target = state.boards.find((board) => board.id === targetBoardId)
+
+    if (!(await mutate(async () => moveCardToDrawer(id, await firstDrawerOf(targetBoardId))))) {
+      return
+    }
+    offerUndo({
+      message: target ? `Filed into ${target.name}` : 'Card filed',
+      undo: () => mutate(() => moveCardToDrawer(id, from)),
+    })
+  }
+
   async function onNewDrawer() {
     const fields = await openDrawerDialog()
     if (fields) await mutate(() => createDrawer(boardId, fields))
@@ -749,13 +873,17 @@ export function mountBoard(root, boardId) {
      --------------------------------------------------------------- */
 
   function dropBarElement() {
-    return root.querySelector('[data-drop-bar]')
+    return root.querySelector('[data-project-bar]')
   }
 
-  /** Which bar zone the pointer is over, if any. */
+  /** Which bar zone the pointer is over, if any — only while a card is
+   *  actually in the air; the bar itself is always there (it's how projects
+   *  get switched), so Archive/Delete only count as targets during a drag. */
   function zoneAt(x, y) {
+    if (!drag.isDragging()) return null
+
     const bar = dropBarElement()
-    if (!bar || bar.hidden) return null
+    if (!bar) return null
 
     const rect = bar.getBoundingClientRect()
     if (y < rect.top) return null
@@ -765,6 +893,25 @@ export function mountBoard(root, boardId) {
       if (x >= box.left && x <= box.right) return element.dataset.zone
     }
     return null
+  }
+
+  /** The project chip the pointer is over, if any — never the current
+   *  project's own chip, which isn't a valid place to file a card into. */
+  function projectChipAt(x, y) {
+    if (!drag.isDragging()) return null
+
+    for (const element of root.querySelectorAll('.project-chip[data-board]:not([data-current])')) {
+      const rect = element.getBoundingClientRect()
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return element
+    }
+    return null
+  }
+
+  function setProjectTarget(next) {
+    if (projectTarget === next) return
+    projectTarget?.classList.remove('is-drop-target')
+    projectTarget = next
+    projectTarget?.classList.add('is-drop-target')
   }
 
   function setZone(next) {
@@ -930,14 +1077,21 @@ export function mountBoard(root, boardId) {
     onStart() {
       closeMenus()
       dismissUndo()
-      const bar = dropBarElement()
-      if (bar) bar.hidden = false
+      dropBarElement()?.classList.add('is-dragging-card')
     },
 
     onMove(x, y, element) {
       const nextZone = zoneAt(x, y)
       setZone(nextZone)
       if (nextZone) {
+        considerMerge(null)
+        setProjectTarget(null)
+        return
+      }
+
+      const project = projectChipAt(x, y)
+      setProjectTarget(project)
+      if (project) {
         considerMerge(null)
         return
       }
@@ -955,12 +1109,14 @@ export function mountBoard(root, boardId) {
     onDrop(element) {
       const droppedZone = zone
       const target = mergeTarget
+      const project = projectTarget
       const id = element.dataset.card
 
       finishDrag()
 
       if (droppedZone === 'delete') onTrashFromBar(id)
       else if (droppedZone === 'archive') onArchive(id)
+      else if (project) onFileIntoBoard(id, project.dataset.board)
       else if (target) onMerge(target.dataset.card, id)
       else commitOrder()
     },
@@ -975,8 +1131,8 @@ export function mountBoard(root, boardId) {
   function finishDrag() {
     clearMerge()
     setZone(null)
-    const bar = dropBarElement()
-    if (bar) bar.hidden = true
+    setProjectTarget(null)
+    dropBarElement()?.classList.remove('is-dragging-card')
     for (const element of root.querySelectorAll('.drawer.is-dropping')) {
       element.classList.remove('is-dropping')
     }
@@ -1151,7 +1307,7 @@ export function mountBoard(root, boardId) {
       return
     }
 
-    const { act, id, drawer } = target.dataset
+    const { act, id, drawer, board } = target.dataset
     if (act !== 'menu') closeMenus()
 
     switch (act) {
@@ -1200,6 +1356,16 @@ export function mountBoard(root, boardId) {
         state.focus = state.focus === drawer ? null : drawer
         render()
         break
+      case 'drawer-expand-all': {
+        const found = drawerById(drawer)
+        if (!found) break
+        const list = cardsIn(drawer)
+        const crowded = list.length > CROWDED_AT
+        const allOpen = list.every((card) => cardStartsOpen(card, { kind: found.kind, crowded }))
+        for (const card of list) setCardFold(card.id, !allOpen)
+        render()
+        break
+      }
       case 'drawer-unfocus':
         state.focus = null
         render()
@@ -1221,6 +1387,9 @@ export function mountBoard(root, boardId) {
         break
       case 'board-delete':
         onDeleteBoard()
+        break
+      case 'switch-board':
+        location.hash = `#/board/${board}`
         break
       case 'back':
         location.hash = '#/'
@@ -1276,6 +1445,7 @@ export function mountBoard(root, boardId) {
     drag.destroy()
     drawerDrag.destroy()
     pictureInput.remove()
+    delete document.body.dataset.tint
     root.removeEventListener('submit', onSubmit)
     root.removeEventListener('focusout', onFocusOut)
     root.removeEventListener('dragover', onDragOver)

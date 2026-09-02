@@ -18,7 +18,10 @@ import {
   renameBoard,
   setBoardStyle,
   archiveBoard,
+  restoreBoard,
   trashBoard,
+  restoreTrashedBoard,
+  saveBoardOrder,
 } from './boards'
 import { listAllDrawers, createDrawer, FIRST_DRAWER } from './drawers'
 import {
@@ -45,6 +48,9 @@ import { setCardFold } from './openCards'
 import { takeSharedNotes } from './share'
 import { offerUndo, dismissUndo } from './undo'
 import { escapeHtml, plural } from './format'
+import { supabase } from './supabaseClient'
+import { cycleTheme, paintThemeButton } from './theme'
+import { installAvailable, onInstallAvailabilityChange, promptInstall } from './installPrompt'
 
 const ICONS = {
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
@@ -235,18 +241,42 @@ export function mountHome(root, { autoFocus = false } = {}) {
       `
     }
 
-    const foot =
-      state.status === 'ready' && state.archivedCount > 0
-        ? `<footer class="page-foot">
-             <button type="button" class="link-btn" data-act="show-archived">
-               ${ICONS.archive} Archived projects (${state.archivedCount})
-             </button>
-           </footer>`
-        : ''
+    const foot = state.status === 'ready' ? utilityFoot() : ''
 
     root.innerHTML = `<section class="page${state.busy ? ' is-busy' : ''}">${capture}${body}${foot}</section>${dropBar()}`
     hydrateNoteImages(root)
     dressNotes(root)
+    const themeButton = root.querySelector('#theme-toggle')
+    if (themeButton) paintThemeButton(themeButton)
+  }
+
+  /** No top header any more (see main.js) — this is where Trash, the theme
+   *  toggle, install and logout live instead: a quiet row at the foot of
+   *  Home rather than a bar over every screen. */
+  function utilityFoot() {
+    return `
+      <footer class="home-foot">
+        <div class="home-foot-row">
+          ${
+            state.archivedCount > 0
+              ? `<button type="button" class="link-btn" data-act="show-archived">
+                   ${ICONS.archive} Archived projects (${state.archivedCount})
+                 </button>`
+              : ''
+          }
+          <button type="button" class="link-btn" data-act="show-trash">${ICONS.trash} Trash</button>
+        </div>
+        <div class="home-foot-row">
+          ${
+            installAvailable()
+              ? `<button type="button" class="link-btn" data-act="install-app">Install</button>`
+              : ''
+          }
+          <button type="button" class="icon-btn icon-btn-sm" id="theme-toggle" data-act="theme-toggle"></button>
+          <button type="button" class="link-btn" data-act="logout">Log out</button>
+        </div>
+      </footer>
+    `
   }
 
   /* ---------------------------------------------------------------
@@ -329,6 +359,19 @@ export function mountHome(root, { autoFocus = false } = {}) {
       state.error = error?.message || 'That did not go through.'
       render()
       return false
+    }
+  }
+
+  /** A change the eye has already seen: keep the optimistic render, and only
+   *  reload if the database disagrees. */
+  async function mutateQuietly(fn) {
+    try {
+      await fn()
+    } catch (error) {
+      if (!alive) return
+      state.status = 'error'
+      state.error = error?.message || 'That did not go through.'
+      render()
     }
   }
 
@@ -516,6 +559,26 @@ export function mountHome(root, { autoFocus = false } = {}) {
     if (ok) await mutate(() => trashBoard(id))
   }
 
+  /** Dropped a project on the bar along the bottom — a gesture, so it goes
+   *  straight through and leaves an undo behind rather than asking first. */
+  async function onArchiveBoardFromBar(id) {
+    const board = boardById(id)
+    if (!(await mutate(() => archiveBoard(id)))) return
+    offerUndo({
+      message: board ? `“${board.name}” archived` : 'Project archived',
+      undo: () => mutate(() => restoreBoard(id)),
+    })
+  }
+
+  async function onTrashBoardFromBar(id) {
+    const board = boardById(id)
+    if (!(await mutate(() => trashBoard(id)))) return
+    offerUndo({
+      message: board ? `“${board.name}” deleted` : 'Project deleted',
+      undo: () => mutate(() => restoreTrashedBoard(id)),
+    })
+  }
+
   /* ---------------------------------------------------------------
      Menus
      --------------------------------------------------------------- */
@@ -665,6 +728,94 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   /* ---------------------------------------------------------------
+     Dragging a project tile — reorders the grid, or drops it on the bar to
+     archive or delete it. A project's own drag, distinct from a note's: the
+     two never run at once, so they can share the drop bar and its zones.
+     --------------------------------------------------------------- */
+
+  /** Slot the dragged tile in wherever the pointer is, by nearest centre —
+   *  the grid wraps to a new row on a wide screen, so "before/after" is a
+   *  two-axis question the same way a gallery's masonry is in boardView.js. */
+  function placeBoard(x, y, element) {
+    const grid = root.querySelector('[data-boards]')
+    if (!grid) return
+
+    const siblings = [...grid.querySelectorAll(':scope > .board-tile')].filter((el) => el !== element)
+
+    let before
+    let bestDistance = Infinity
+    for (const el of siblings) {
+      const rect = el.getBoundingClientRect()
+      const cx = rect.left + rect.width / 2
+      const cy = rect.top + rect.height / 2
+      const distance = (x - cx) ** 2 + (y - cy) ** 2
+      if (distance >= bestDistance) continue
+      bestDistance = distance
+      before = y < cy || (Math.abs(y - cy) < rect.height / 2 && x < cx) ? el : el.nextElementSibling
+    }
+    if (before && !before.classList?.contains('board-tile')) before = undefined
+
+    if (before) grid.insertBefore(element, before)
+    else grid.append(element)
+  }
+
+  /** Read the grid back out of the DOM and persist whatever shifted. */
+  async function commitBoardOrder() {
+    const grid = root.querySelector('[data-boards]')
+    if (!grid) return
+
+    const ids = [...grid.querySelectorAll(':scope > .board-tile[data-board]')].map(
+      (element) => element.dataset.board
+    )
+    if (ids.every((id, index) => state.boards[index]?.id === id)) {
+      render()
+      return
+    }
+
+    // Optimistic: the tiles are already where the eye expects them.
+    const byId = new Map(state.boards.map((board) => [board.id, board]))
+    state.boards = ids.map((id) => byId.get(id)).filter(Boolean)
+    render()
+    await mutateQuietly(() => saveBoardOrder(ids))
+  }
+
+  const boardDrag = createDragEngine({
+    root,
+    selector: '.board-tile[data-board]',
+    blockSelector: '.menu, [data-no-drag]',
+
+    onStart() {
+      closeMenus()
+      dismissUndo()
+      const bar = dropBarElement()
+      if (bar) bar.hidden = false
+    },
+
+    onMove(x, y, element) {
+      const nextZone = zoneAt(x, y)
+      setZone(nextZone)
+      if (nextZone) return
+      placeBoard(x, y, element)
+    },
+
+    onDrop(element) {
+      const droppedZone = zone
+      const id = element.dataset.board
+
+      finishDrag()
+
+      if (droppedZone === 'delete') onTrashBoardFromBar(id)
+      else if (droppedZone === 'archive') onArchiveBoardFromBar(id)
+      else commitBoardOrder()
+    },
+
+    onCancel() {
+      finishDrag()
+      if (alive) render()
+    },
+  })
+
+  /* ---------------------------------------------------------------
      Wiring
      --------------------------------------------------------------- */
 
@@ -679,7 +830,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   function onClick(event) {
-    if (drag.justDragged()) return
+    if (drag.justDragged() || boardDrag.justDragged()) return
 
     // A picture inside a folded-out note opens full size; one inside a link
     // card is the link's own, and follows it.
@@ -743,6 +894,19 @@ export function mountHome(root, { autoFocus = false } = {}) {
       case 'show-archived':
         location.hash = '#/archived'
         break
+      case 'show-trash':
+        location.hash = '#/trash'
+        break
+      case 'theme-toggle':
+        cycleTheme()
+        render()
+        break
+      case 'install-app':
+        promptInstall()
+        break
+      case 'logout':
+        supabase.auth.signOut()
+        break
       case 'retry':
         load()
         break
@@ -767,6 +931,12 @@ export function mountHome(root, { autoFocus = false } = {}) {
   document.addEventListener('click', onClick)
   document.addEventListener('keydown', onKeydown)
 
+  // The install prompt can become available (or get taken) at any point,
+  // independent of anything Home itself did — see installPrompt.js.
+  const stopWatchingInstall = onInstallAvailabilityChange(() => {
+    if (state.status === 'ready') render()
+  })
+
   load()
 
   return function unmount() {
@@ -774,6 +944,8 @@ export function mountHome(root, { autoFocus = false } = {}) {
     clearMerge()
     dismissUndo()
     drag.destroy()
+    boardDrag.destroy()
+    stopWatchingInstall()
     root.removeEventListener('submit', onSubmit)
     document.removeEventListener('click', onClick)
     document.removeEventListener('keydown', onKeydown)

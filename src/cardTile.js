@@ -21,7 +21,7 @@
 
 import { PRIORITY_LABELS } from './cards'
 import { cardFold } from './openCards'
-import { escapeHtml, dueInfo } from './format'
+import { escapeHtml, dueInfo, relativeTime } from './format'
 import { plainText, firstImage, renderMarkdown } from './markdown'
 
 const ICONS = {
@@ -34,6 +34,10 @@ const ICONS = {
 
 /** How much of a titleless note stands in for its heading. */
 const HEADING_LIMIT = 90
+
+/** …and how much a titleless *list* card gets: a to-do line is the whole
+ *  card, so it gets to run past a single-line stub before it's cut off. */
+const LIST_HEADING_LIMIT = 220
 
 /** …and how much of it a gallery tile with no picture gets to show, where the
  *  words are the whole tile rather than a line above a thumbnail. */
@@ -95,7 +99,9 @@ function faceImage(picture, className) {
     ? `data-note-image="${escapeHtml(picture.path)}"`
     : `src="${escapeHtml(picture.url)}"`
 
-  return `<img class="${className}" ${source} alt="" loading="lazy">`
+  // Without this, grabbing the picture starts the browser's own image drag
+  // instead of the card's — draggable="false" leaves the gesture to drag.js.
+  return `<img class="${className}" ${source} alt="" loading="lazy" draggable="false">`
 }
 
 function tags(card) {
@@ -151,15 +157,16 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   const title = card.title.trim()
   const bodyText = plainText(card.body_markdown)
   const picture = firstImage(card.body_markdown)
+  const headingLimit = kind === 'list' ? LIST_HEADING_LIMIT : HEADING_LIMIT
 
   // Only offer to unfold when there is something the face isn't already
   // showing: a picture, formatting under a title, or more words than fit.
   const foldable =
     Boolean(card.body_markdown.trim()) &&
-    (Boolean(title) || Boolean(picture) || bodyText.length > HEADING_LIMIT)
+    (Boolean(title) || Boolean(picture) || bodyText.length > headingLimit)
 
   const open = expanded && foldable
-  const heading = trim(title || bodyText, HEADING_LIMIT) || 'Untitled'
+  const heading = trim(title || bodyText, headingLimit) || 'Untitled'
 
   // A titleless card already spends its note on the heading, and an open card
   // is showing the whole thing underneath — either way, repeating it as an
@@ -193,7 +200,10 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   const actions = `<div class="card-actions">${copy}${fold}${menu(card)}</div>`
 
   const note = open
-    ? `<div class="card-note markdown-body">${renderMarkdown(card.body_markdown)}</div>`
+    ? `<div class="card-note markdown-body">
+         ${renderMarkdown(card.body_markdown)}
+         <p class="card-edited">Edited ${escapeHtml(relativeTime(card.updated_at))}</p>
+       </div>`
     : ''
 
   if (kind === 'gallery') {
@@ -225,6 +235,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
       <article
         class="card card-gallery${picture ? '' : ' is-text'}${open ? ' is-open' : ''}"
         data-card="${card.id}"
+        data-priority="${card.priority ?? ''}"
         data-drag
       >
         <button type="button" class="card-face" data-act="open" data-id="${card.id}">
@@ -241,6 +252,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
       <article
         class="card card-list${card.done ? ' is-done' : ''}${open ? ' is-open' : ''}"
         data-card="${card.id}"
+        data-priority="${card.priority ?? ''}"
         data-drag
       >
         <div class="card-line">
@@ -255,6 +267,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
           >${ICONS.tick}</button>
           <button type="button" class="card-face" data-act="open" data-id="${card.id}">
             <span class="card-title">${escapeHtml(heading)}</span>
+            ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
           </button>
           ${open ? '' : faceImage(picture, 'card-thumb card-thumb-sm')}
@@ -266,7 +279,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   }
 
   return `
-    <article class="card card-note-tile${open ? ' is-open' : ''}" data-card="${card.id}" data-drag>
+    <article class="card card-note-tile${open ? ' is-open' : ''}" data-card="${card.id}" data-priority="${card.priority ?? ''}" data-drag>
       <div class="card-line">
         <button type="button" class="card-face" data-act="open" data-id="${card.id}">
           <span class="card-face-text">

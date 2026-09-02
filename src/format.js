@@ -42,6 +42,30 @@ export function toDateInput(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+const RELATIVE_UNITS = [
+  ['year', 31536000],
+  ['month', 2592000],
+  ['week', 604800],
+  ['day', 86400],
+  ['hour', 3600],
+  ['minute', 60],
+]
+
+/** A timestamptz as "just now" / "3 hours ago" / "2 weeks ago" — the discrete
+ *  "edited …" line under a note, not a precise clock. */
+export function relativeTime(value) {
+  if (!value) return ''
+
+  const seconds = Math.floor((Date.now() - new Date(value).getTime()) / 1000)
+  if (seconds < 45) return 'just now'
+
+  for (const [unit, unitSeconds] of RELATIVE_UNITS) {
+    const count = Math.floor(seconds / unitSeconds)
+    if (count >= 1) return `${count} ${unit}${count > 1 ? 's' : ''} ago`
+  }
+  return 'just now'
+}
+
 /**
  * Describe a due date relative to today: `{ label, overdue, today }`.
  * Returns null when there is no due date.
