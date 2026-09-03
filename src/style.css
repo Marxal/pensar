@@ -912,6 +912,11 @@ button {
 /* The name is a button because tapping it is how it gets changed. */
 .drawer-title {
   min-width: 0;
+  /* Five controls share this header on a desktop, so a long name gives way
+     rather than wrapping the header onto a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0.1rem 0.3rem;
   margin-left: -0.3rem;
   border: 1px solid transparent;
@@ -922,7 +927,6 @@ button {
   font-weight: 600;
   letter-spacing: -0.01em;
   text-align: left;
-  overflow-wrap: anywhere;
   cursor: text;
 }
 
@@ -996,7 +1000,11 @@ button {
    no picture at all sit among them as a block of text. */
 .drawer[data-kind='gallery'] .drawer-cards {
   display: block;
-  columns: 8.5rem;
+  /* A count, not a width, so tapping the gallery icon of a drawer that's
+     already a gallery can change it — see galleryZoom.js. Until it's been
+     tapped the fallback stands in, and it differs by context: a drawer in the
+     row reads as two columns across, one being looked at on its own as four. */
+  columns: var(--gallery-cols, 2);
   column-gap: 0.45rem;
   min-height: 3rem;
 }
@@ -1008,7 +1016,7 @@ button {
 }
 
 .drawers.is-focused .drawer[data-kind='gallery'] .drawer-cards {
-  columns: 13rem;
+  columns: var(--gallery-cols, 4);
 }
 
 /* The "drop pictures here" line belongs across the drawer, not down one column. */
@@ -1124,6 +1132,10 @@ button {
 .card-face {
   flex: 1;
   min-width: 0;
+  /* A titleless card that's folded out has given its words to the note below,
+     which leaves the face empty — it's still the button that opens the note, so
+     it keeps enough height to be tapped. */
+  min-height: 1.5rem;
   display: flex;
   align-items: flex-start;
   gap: 0.55rem;
@@ -1159,16 +1171,10 @@ button {
   z-index: 1;
 }
 
-.card-actions-shim {
-  float: right;
-  width: calc(var(--actions, 3) * 1.85rem + 0.3rem);
-  height: 1.5rem;
-}
-
-/* A picture tucks in under the buttons, with the words running around it. */
+/* A picture floats into the top corner with the words running around it.
+   Nothing sits above it now the buttons are gone, so it has nothing to clear. */
 .card-note-tile .card-thumb {
   float: right;
-  clear: right;
   margin: 0.1rem 0 0.35rem 0.55rem;
 }
 
@@ -1219,14 +1225,25 @@ button {
   margin-top: 0.35rem;
 }
 
+/* Copy is the only button left on a card, and it earns its place only where
+   there's a pointer to hover it with. On a touch screen it would have to sit
+   there permanently, on top of the words, for a job the open note already
+   does — so there the whole corner goes undrawn. The wrapper has to go with it,
+   not just the button: over a gallery picture it carries a pill of its own, and
+   an empty one would float there over every photo. */
 .card-actions {
-  display: flex;
+  display: none;
   align-items: center;
-  gap: 0.1rem;
   flex-shrink: 0;
 }
 
-/* The buttons that sit in a card's own corner: read it, copy it. */
+@media (hover: hover) {
+  .card-actions {
+    display: flex;
+  }
+}
+
+/* The button that sits in a card's own corner: copy it. */
 .card-btn {
   display: grid;
   place-items: center;
@@ -1255,31 +1272,22 @@ button {
   stroke-linejoin: round;
 }
 
-.card-fold[aria-expanded='true'] {
-  rotate: 180deg;
-}
-
+/* It floats over the end of the first line now, rather than holding a gap open
+   beside it, so it needs a ground of its own to stay legible over a word. */
 .card-copy {
-  opacity: 0.65;
+  opacity: 0;
+  background: color-mix(in srgb, var(--paper-raised) 88%, transparent);
+  backdrop-filter: blur(4px);
+  transition: opacity 0.15s ease, color 0.15s ease;
 }
 
 .card:hover .card-copy,
-.card-copy:hover,
 .card-copy:focus-visible {
   opacity: 1;
 }
 
 .card-copy.is-copied {
   color: var(--accent);
-  opacity: 1;
-}
-
-.card .menu-trigger {
-  opacity: 0.6;
-}
-
-.card:hover .menu-trigger,
-.card .menu-trigger:hover {
   opacity: 1;
 }
 
@@ -1355,7 +1363,8 @@ button {
   border-color: var(--accent);
 }
 
-.card-list.is-done .card-tick {
+.card-list.is-done .card-tick,
+.card-tick.is-done {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
@@ -1448,7 +1457,7 @@ button {
 }
 
 /* Over the picture rather than beside it, and trimmed down: a gallery column
-   is narrow, and three buttons at full size would be most of its width. */
+   is narrow, and a button at full size would be a good part of its width. */
 .card-gallery .card-actions {
   position: absolute;
   top: 0.3rem;
@@ -1458,8 +1467,7 @@ button {
   backdrop-filter: blur(4px);
 }
 
-.card-gallery .card-actions .card-btn,
-.card-gallery .card-actions .icon-btn-sm {
+.card-gallery .card-actions .card-btn {
   width: 1.5rem;
   height: 1.5rem;
 }
@@ -2068,7 +2076,19 @@ body.has-overlay .project-bar {
   outline: none;
 }
 
+.note-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.note-title-row .card-tick {
+  margin-top: 0.4rem;
+}
+
 .note-title {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-heading);
   font-size: 1.4rem;
   font-weight: 600;

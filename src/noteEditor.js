@@ -146,14 +146,26 @@ function caretToEnd(element) {
  * Open a note. Pass `card` to edit one, or `drawerId` to start a new one in
  * that drawer (null for Quick notes).
  *
+ * `onMove` is optional and adds "Move to…" to the menu. Filing a card is a
+ * drag everywhere else, but a drag onto another project can only land in that
+ * project's first drawer — so picking an exact drawer lives here instead, and
+ * the view underneath supplies it, since that's where the lists and the undo
+ * are. It's handed the saved card and returns whether the card actually moved.
+ *
  * Resolves once it's closed, with `{ card, changed }` — `card` being the saved
  * row, or null if the note was left empty and never written, and `changed`
  * saying whether the view underneath has anything to reload.
+ *
+ * `kind` is the drawer's shape ('list' | 'notes' | 'gallery'); a tick list
+ * gets a checkbox beside its title, the same tick a card's face already
+ * carries, so a task can be finished from inside its own note too.
  */
-export function openNote({ card = null, drawerId = null } = {}) {
+export function openNote({ card = null, drawerId = null, kind = null, onMove = null } = {}) {
   return new Promise((resolve) => {
     const isNew = !card
+    const isList = kind === 'list'
     let saved = card
+    let done = Boolean(card?.done)
     let changed = false
     let closed = false
     let saveTimer = null
@@ -178,6 +190,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
               title="Note actions"
             >${ICONS.more}</button>
             <div class="menu-list" hidden>
+              ${onMove ? '<button type="button" data-act="move">Move to…</button>' : ''}
               <button type="button" data-act="archive">Archive</button>
               <button type="button" class="menu-danger" data-act="delete">Delete</button>
             </div>
@@ -186,14 +199,28 @@ export function openNote({ card = null, drawerId = null } = {}) {
 
         <div class="note-scroll">
           <p class="note-edited" data-edited hidden></p>
-          <div
-            class="note-title"
-            contenteditable="true"
-            role="textbox"
-            aria-label="Title"
-            data-title
-            data-placeholder="Title"
-          ></div>
+          <div class="note-title-row">
+            ${
+              isList
+                ? `<button
+                    type="button"
+                    class="card-tick"
+                    data-tick
+                    role="checkbox"
+                    aria-checked="false"
+                    aria-label="Mark as done"
+                  >${ICONS.check}</button>`
+                : ''
+            }
+            <div
+              class="note-title"
+              contenteditable="true"
+              role="textbox"
+              aria-label="Title"
+              data-title
+              data-placeholder="Title"
+            ></div>
+          </div>
           <div
             class="note-body markdown-body"
             contenteditable="true"
@@ -255,6 +282,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
     const dueLabel = backdrop.querySelector('[data-due-label]')
     const dueClear = backdrop.querySelector('[data-due-clear]')
     const imageInput = backdrop.querySelector('[data-image-input]')
+    const tickButton = backdrop.querySelector('[data-tick]')
     const copyButton = backdrop.querySelector('[data-copy]')
     const menuTrigger = backdrop.querySelector('[data-menu]')
     const menuList = menuTrigger.nextElementSibling
@@ -298,6 +326,13 @@ export function openNote({ card = null, drawerId = null } = {}) {
       }
     }
 
+    function paintDone() {
+      if (!tickButton) return
+      tickButton.classList.toggle('is-done', done)
+      tickButton.setAttribute('aria-checked', String(done))
+      tickButton.setAttribute('aria-label', done ? 'Mark as not done' : 'Mark as done')
+    }
+
     function paintEmpty() {
       titleEl.classList.toggle('is-empty', !titleEl.textContent.trim())
       bodyEl.classList.toggle(
@@ -323,6 +358,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
 
     paintDue()
     paintPriority()
+    paintDone()
     paintEmpty()
     paintEdited()
 
@@ -337,6 +373,7 @@ export function openNote({ card = null, drawerId = null } = {}) {
         due_date: dueInput.value || null,
         due_time: dueInput.value ? dueTimeInput.value || null : null,
         priority,
+        ...(isList ? { done } : {}),
       }
     }
 
@@ -351,7 +388,8 @@ export function openNote({ card = null, drawerId = null } = {}) {
         saved.body_markdown === fields.body_markdown &&
         (saved.due_date ?? null) === fields.due_date &&
         (saved.due_time ?? null) === fields.due_time &&
-        (saved.priority ?? null) === fields.priority
+        (saved.priority ?? null) === fields.priority &&
+        (!isList || Boolean(saved.done) === fields.done)
       )
     }
 
@@ -715,6 +753,12 @@ export function openNote({ card = null, drawerId = null } = {}) {
       markDirty()
     })
 
+    tickButton?.addEventListener('click', () => {
+      done = !done
+      paintDone()
+      markDirty()
+    })
+
     /* -------------------------------------------------------------
        Menu and closing
        ------------------------------------------------------------- */
@@ -761,8 +805,8 @@ export function openNote({ card = null, drawerId = null } = {}) {
       if (!action) return
       closeMenu()
 
-      // Archive and delete both need the note to exist first, so whatever is
-      // on screen is written away before it's filed somewhere.
+      // Every one of these needs the note to exist first, so whatever is on
+      // screen is written away before it's filed somewhere.
       await save()
       if (!saved) {
         close({ discarded: true })
@@ -770,6 +814,16 @@ export function openNote({ card = null, drawerId = null } = {}) {
       }
 
       try {
+        if (action === 'move') {
+          // Cancelled, or it didn't go through: the note stays open and the
+          // view underneath has already said why.
+          if (await onMove(saved)) {
+            changed = true
+            close({ discarded: true })
+          }
+          return
+        }
+
         if (action === 'archive') await archiveCard(saved.id)
         else await trashCard(saved.id)
         changed = true

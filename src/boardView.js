@@ -46,13 +46,20 @@ import {
 import { openBoardDialog, openConfirm, openDrawerDialog, openMovePicker } from './dialogs'
 import { openNote } from './noteEditor'
 import { openLightbox } from './lightbox'
-import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
+import { renderCard, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { boardColour, renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { slideInto } from './flip'
 import { signImages, looksLikeImage, uploadNoteImage } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
+import {
+  galleryColumns,
+  setGalleryColumns,
+  forgetGalleryColumns,
+  nextGalleryColumns,
+} from './galleryZoom'
+import { draft, setDraft, clearDraft } from './drafts'
 import { offerUndo, dismissUndo } from './undo'
 import { escapeHtml, plural } from './format'
 
@@ -66,6 +73,11 @@ const ICONS = {
   expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h5v5M20 4l-6.5 6.5M9 20H4v-5M4 20l6.5-6.5"/></svg>`,
   collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 9h-5V4M14.5 9.5 20 4M4 15h5v5M9.5 14.5 4 20"/></svg>`,
   picture: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
+  // Chevrons apart and together: every note in the drawer folded out, or away.
+  // Deliberately not expand/collapse above — that pair is one drawer filling
+  // the screen, and on a desktop the two buttons now sit side by side.
+  unfold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 10.5 12 6.5l4 4M8 13.5l4 4 4-4"/></svg>`,
+  fold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6.5 12 10.5l4-4M8 17.5l4-4 4 4"/></svg>`,
 }
 
 /** One small glyph per drawer shape, for the buttons that switch it. */
@@ -146,6 +158,7 @@ export function mountBoard(root, boardId) {
                   autocomplete="off"
                   maxlength="200"
                   placeholder="Add an item…"
+                  value="${escapeHtml(draft(`add-item:${drawer.id}`))}"
                 />
                 <button type="submit" class="icon-btn icon-btn-sm" aria-label="Add" title="Add">${ICONS.plus}</button>
               </form>`
@@ -212,27 +225,13 @@ export function mountBoard(root, boardId) {
     const crowded = cards.length > CROWDED_AT
     const focused = state.focus === drawer.id
 
-    let expandControl = ''
-    if (isPhone()) {
-      if (cards.length) {
-        const allOpen = cards.every((card) =>
-          cardStartsOpen(card, { kind: drawer.kind, crowded })
-        )
-        expandControl = `
-          <button
-            type="button"
-            class="icon-btn icon-btn-sm"
-            data-act="drawer-expand-all"
-            data-drawer="${drawer.id}"
-            data-no-drag
-            aria-pressed="${String(allOpen)}"
-            aria-label="${allOpen ? 'Collapse every note' : 'Expand every note'}"
-            title="${allOpen ? 'Collapse every note' : 'Expand every note'}"
-          >${allOpen ? ICONS.collapse : ICONS.expand}</button>
-        `
-      }
-    } else {
-      expandControl = `
+    // Folding notes out is what the chevron on every card used to do one at a
+    // time, and it was always really a decision about the whole drawer — so it
+    // lives here now, on every screen. A desktop keeps "show this one on its
+    // own" beside it; a phone stacks drawers one at a time already.
+    const focusControl = isPhone()
+      ? ''
+      : `
         <button
           type="button"
           class="icon-btn icon-btn-sm"
@@ -244,10 +243,35 @@ export function mountBoard(root, boardId) {
           title="${focused ? 'Show every drawer' : 'Show this drawer on its own'}"
         >${focused ? ICONS.collapse : ICONS.expand}</button>
       `
+
+    let expandControl = ''
+    if (cards.length) {
+      const allOpen = cards.every((card) => cardStartsOpen(card, { kind: drawer.kind, crowded }))
+      expandControl = `
+        <button
+          type="button"
+          class="icon-btn icon-btn-sm"
+          data-act="drawer-expand-all"
+          data-drawer="${drawer.id}"
+          data-no-drag
+          aria-pressed="${String(allOpen)}"
+          aria-label="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+          title="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+        >${allOpen ? ICONS.fold : ICONS.unfold}</button>
+      `
     }
 
-    const shapeControls = DRAWER_KINDS.map(
-      (kind) => `
+    // A gallery you're already looking at doesn't need switching to, so its own
+    // icon takes a second job: another tap steps the column count. Its label
+    // says where the next tap lands, since there's no other chrome to say so.
+    const shapeControls = DRAWER_KINDS.map((kind) => {
+      const current = drawer.kind === kind
+      const label =
+        current && kind === 'gallery'
+          ? `Gallery — tap for ${plural(nextGalleryColumns(drawer.id, defaultColumns(drawer.id)), 'column')}`
+          : DRAWER_KIND_LABELS[kind]
+
+      return `
         <button
           type="button"
           class="icon-btn icon-btn-sm"
@@ -255,18 +279,24 @@ export function mountBoard(root, boardId) {
           data-drawer="${drawer.id}"
           data-kind="${kind}"
           data-no-drag
-          aria-pressed="${String(drawer.kind === kind)}"
-          aria-label="${DRAWER_KIND_LABELS[kind]}"
-          title="${DRAWER_KIND_LABELS[kind]}"
+          aria-pressed="${String(current)}"
+          aria-label="${escapeHtml(label)}"
+          title="${escapeHtml(label)}"
         >${KIND_ICONS[kind]}</button>
       `
-    ).join('')
+    }).join('')
+
+    // Left off entirely until it's been chosen, so the stylesheet's own
+    // fallback — two columns, or four for a drawer on its own — still decides.
+    const zoom = drawer.kind === 'gallery' ? galleryColumns(drawer.id) : undefined
+    const columns = zoom ? ` style="--gallery-cols: ${zoom}"` : ''
 
     return `
-      <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}">
+      <section class="drawer" data-drawer="${drawer.id}" data-kind="${drawer.kind}"${columns}>
         <header class="drawer-head"${state.focus ? '' : ' data-drawer-handle'}>
           ${drawerTitle(drawer)}
           <span class="drawer-count">${cards.length}</span>
+          ${focusControl}
           ${expandControl}
           <div class="drawer-shapes">${shapeControls}</div>
         </header>
@@ -409,6 +439,13 @@ export function mountBoard(root, boardId) {
   function render() {
     paintPageTint()
 
+    // A render triggered by something other than this form — a picture
+    // finishing its upload elsewhere, a realtime change — shouldn't throw
+    // away an item being typed. Baked back in via `adderFor`; refocused below.
+    const focusedForm = document.activeElement?.closest?.('[data-add-form]')
+    const focusedDrawer = focusedForm?.dataset.drawer
+    const caret = focusedDrawer ? document.activeElement.selectionStart : null
+
     if (state.status === 'missing') {
       root.innerHTML = `
         <section class="page">
@@ -467,6 +504,14 @@ export function mountBoard(root, boardId) {
     if (renaming) {
       renaming.focus()
       renaming.select()
+    }
+
+    if (focusedDrawer) {
+      const input = root.querySelector(`[data-add-form][data-drawer="${focusedDrawer}"] input`)
+      if (input) {
+        input.focus()
+        input.setSelectionRange(caret, caret)
+      }
     }
   }
 
@@ -578,7 +623,8 @@ export function mountBoard(root, boardId) {
   }
 
   async function openCard(card, drawerId) {
-    const { changed } = await openNote(card ? { card } : { drawerId })
+    const kind = drawerById(card ? card.drawer_id : drawerId)?.kind
+    const { changed } = await openNote({ ...(card ? { card } : { drawerId }), kind, onMove })
     if (changed && alive) await load()
   }
 
@@ -592,14 +638,20 @@ export function mountBoard(root, boardId) {
    * a line of text, and giving it a title as well would mean writing it twice.
    */
   async function onQuickAdd(drawerId, text) {
-    if (!text.trim()) return
+    if (!text.trim()) {
+      clearDraft(`add-item:${drawerId}`)
+      return
+    }
     try {
       await createCard(drawerId, { body_markdown: text.trim() })
       if (!alive) return
+      clearDraft(`add-item:${drawerId}`)
       await load()
       root.querySelector(`[data-add-form][data-drawer="${drawerId}"] input`)?.focus()
     } catch (error) {
       if (!alive) return
+      // Not thrown away — the field takes it back so the retry isn't a retype.
+      setDraft(`add-item:${drawerId}`, text)
       state.status = 'error'
       state.error = error?.message || 'That did not go through.'
       render()
@@ -630,36 +682,26 @@ export function mountBoard(root, boardId) {
     mutateQuietly(() => setCardDone(id, card.done))
   }
 
-  async function onDelete(id) {
-    const card = cardById(id)
-    if (!card) return
 
-    const ok = await openConfirm({
-      title: `Delete “${cardHeading(card, 60)}”?`,
-      message: 'It moves to the trash rather than vanishing outright.',
-      confirmLabel: 'Delete',
-      destructive: true,
-    })
-    if (ok) await mutate(() => trashCard(id))
-  }
-
-  async function onMove(id) {
-    const card = cardById(id)
-    if (!card) return
-
+  /** Filing a card into one particular drawer, offered from inside the note.
+   *  It's the one thing a gesture can't do precisely: dropping a card on
+   *  another project lands it in that project's first drawer, because a chip
+   *  on the bar is all there is to aim at. */
+  async function onMove(card) {
     const from = card.drawer_id
     const picked = await openMovePicker({
       boards: state.boards,
       drawers: state.allDrawers,
       currentDrawerId: from,
     })
-    if (!picked) return
+    if (!picked || picked.drawerId === from) return false
 
-    if (!(await mutate(() => moveCardToDrawer(id, picked.drawerId)))) return
+    if (!(await mutate(() => moveCardToDrawer(card.id, picked.drawerId)))) return false
     offerUndo({
       message: 'Card moved',
-      undo: () => mutate(() => moveCardToDrawer(id, from)),
+      undo: () => mutate(() => moveCardToDrawer(card.id, from)),
     })
+    return true
   }
 
   /** Copy a card's title and note as plain text. Flashes the button's icon to
@@ -742,11 +784,29 @@ export function mountBoard(root, boardId) {
     if (fields) await mutate(() => createDrawer(boardId, fields))
   }
 
+  /** What the stylesheet draws a gallery at before anyone has zoomed it — the
+   *  --gallery-cols fallbacks in style.css, kept in step by hand. */
+  function defaultColumns(id) {
+    return state.focus === id ? 4 : 2
+  }
+
   /** A shape is a tap on one of the drawer's own icons — no dialog, since
-   *  nothing about the cards inside it changes when the drawer does. */
+   *  nothing about the cards inside it changes when the drawer does. Tapping
+   *  the shape a drawer is already in does nothing, with one exception: a
+   *  gallery steps its column count instead. That's this device's screen
+   *  talking rather than the drawer, so it never goes near the database — and
+   *  so it re-renders without the round trip `mutate` would cost. */
   async function onSetDrawerKind(id, kind) {
     const drawer = drawerById(id)
-    if (!drawer || drawer.kind === kind) return
+    if (!drawer) return
+
+    if (drawer.kind === kind) {
+      if (kind !== 'gallery') return
+      setGalleryColumns(id, nextGalleryColumns(id, defaultColumns(id)))
+      render()
+      return
+    }
+
     await mutate(() => updateDrawer(id, { kind }))
   }
 
@@ -761,6 +821,8 @@ export function mountBoard(root, boardId) {
     const inside = cardsIn(id).map((card) => ({ id: card.id, position: card.position }))
 
     if (state.focus === id) state.focus = null
+    clearDraft(`add-item:${id}`)
+    forgetGalleryColumns(id)
     if (!(await mutate(() => deleteDrawer(id)))) return
 
     offerUndo({
@@ -1061,23 +1123,42 @@ export function mountBoard(root, boardId) {
     syncEmptyHints()
   }
 
-  /** Read the drawers back out of the DOM and persist whatever shifted. */
+  /** Read the drawers back out of the DOM and persist whatever shifted. A
+   *  tick list also finishes a task this way: dropped past the "Completed"
+   *  divider, a card is done, same as tapping its tick box would leave it. */
   async function commitOrder() {
     const byId = new Map(state.cards.map((card) => [card.id, card]))
     const moves = []
+    const doneChanges = []
 
     for (const drawer of root.querySelectorAll('.drawer[data-drawer]')) {
       const drawerId = drawer.dataset.drawer
-      drawer.querySelectorAll('.drawer-cards > .card').forEach((element, position) => {
+      const isList = drawer.dataset.kind === 'list'
+      const divider = drawer.querySelector('.list-divider')
+      let pastDivider = false
+      let position = 0
+
+      for (const element of drawer.querySelectorAll('.drawer-cards > *')) {
+        if (element === divider) {
+          pastDivider = true
+          continue
+        }
+        if (!element.matches('.card')) continue
+
         const card = byId.get(element.dataset.card)
-        if (!card) return
+        if (!card) continue
+
         if (card.drawer_id !== drawerId || card.position !== position) {
           moves.push({ id: card.id, drawer_id: drawerId, position })
         }
-      })
+        if (isList && Boolean(card.done) !== pastDivider) {
+          doneChanges.push({ id: card.id, done: pastDivider })
+        }
+        position++
+      }
     }
 
-    if (!moves.length) {
+    if (!moves.length && !doneChanges.length) {
       render()
       return
     }
@@ -1088,8 +1169,15 @@ export function mountBoard(root, boardId) {
       card.drawer_id = move.drawer_id
       card.position = move.position
     }
+    for (const change of doneChanges) {
+      byId.get(change.id).done = change.done
+    }
     render()
-    await mutateQuietly(() => saveOrder(moves))
+    await mutateQuietly(async () => {
+      const tasks = doneChanges.map((change) => setCardDone(change.id, change.done))
+      if (moves.length) tasks.push(saveOrder(moves))
+      await Promise.all(tasks)
+    })
   }
 
   const drag = createDragEngine({
@@ -1339,6 +1427,11 @@ export function mountBoard(root, boardId) {
     onQuickAdd(form.dataset.drawer, text)
   }
 
+  function onInput(event) {
+    const form = event.target.closest('[data-add-form]')
+    if (form) setDraft(`add-item:${form.dataset.drawer}`, event.target.value)
+  }
+
   function onClick(event) {
     // A click fires at the end of a drag; that isn't a tap on the card.
     if (drag.justDragged() || drawerDrag.justDragged()) return
@@ -1372,24 +1465,11 @@ export function mountBoard(root, boardId) {
       case 'open':
         openCard(cardById(id))
         break
-      case 'fold':
-        setCardFold(id, target.getAttribute('aria-expanded') !== 'true')
-        render()
-        break
       case 'tick':
         onTick(id)
         break
       case 'copy':
         onCopy(id, target)
-        break
-      case 'move':
-        onMove(id)
-        break
-      case 'archive':
-        onArchive(id)
-        break
-      case 'delete':
-        onDelete(id)
         break
       case 'menu':
         toggleMenu(target)
@@ -1471,6 +1551,7 @@ export function mountBoard(root, boardId) {
   }
 
   root.addEventListener('submit', onSubmit)
+  root.addEventListener('input', onInput)
   root.addEventListener('focusout', onFocusOut)
   root.addEventListener('dragover', onDragOver)
   root.addEventListener('dragleave', onDragLeave)
@@ -1489,6 +1570,7 @@ export function mountBoard(root, boardId) {
     pictureInput.remove()
     delete document.body.dataset.tint
     root.removeEventListener('submit', onSubmit)
+    root.removeEventListener('input', onInput)
     root.removeEventListener('focusout', onFocusOut)
     root.removeEventListener('dragover', onDragOver)
     root.removeEventListener('dragleave', onDragLeave)

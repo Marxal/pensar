@@ -39,13 +39,14 @@ import {
 import { openBoardDialog, openConfirm, openMovePicker } from './dialogs'
 import { openNote } from './noteEditor'
 import { openLightbox } from './lightbox'
-import { renderCard, cardHeading, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
+import { renderCard, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { slideInto } from './flip'
 import { signImages } from './images'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
+import { draft, setDraft, clearDraft } from './drafts'
 import { takeSharedNotes } from './share'
 import { offerUndo, dismissUndo } from './undo'
 import { escapeHtml, plural } from './format'
@@ -71,6 +72,10 @@ const ICONS = {
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M7.5 7l.7 11.3A1.7 1.7 0 0 0 9.9 20h4.2a1.7 1.7 0 0 0 1.7-1.7L16.5 7M10.3 10.5v6M13.7 10.5v6"/></svg>`,
   check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
   bell: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12M7 17v-5.5a5 5 0 0 1 10 0V17M10.5 20a1.7 1.7 0 0 0 3 0"/></svg>`,
+  // Chevrons apart and together: every quick note folded out, or away. The
+  // same pair the board's drawers use.
+  unfold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 10.5 12 6.5l4 4M8 13.5l4 4 4-4"/></svg>`,
+  fold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6.5 12 10.5l4-4M8 17.5l4-4 4 4"/></svg>`,
 }
 
 /** How long a card has to be held over another before the two would merge. */
@@ -158,11 +163,24 @@ export function mountHome(root, { autoFocus = false } = {}) {
 
     const crowded = state.notes.length > CROWDED_AT
 
+    // Quick notes is a drawer in everything but name, and folding is the same
+    // decision here as it is there: one control over the lot, rather than a
+    // chevron on every card getting in the way of the words.
+    const allOpen = state.notes.every((card) => cardStartsOpen(card, { crowded }))
+
     return `
       <section class="home-section">
         <header class="section-head">
           <h3 class="section-title">Quick notes</h3>
           <span class="section-count">${state.notes.length}</span>
+          <button
+            type="button"
+            class="icon-btn icon-btn-sm"
+            data-act="notes-expand-all"
+            aria-pressed="${String(allOpen)}"
+            aria-label="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+            title="${allOpen ? 'Collapse every note' : 'Expand every note'}"
+          >${allOpen ? ICONS.fold : ICONS.unfold}</button>
         </header>
         <div class="quick-notes" data-cards>
           ${state.notes
@@ -203,6 +221,14 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   function render() {
+    // A render can be triggered by something that has nothing to do with what
+    // the user's typing (an install prompt, a permission flip, an icon
+    // finishing its sign-in), and this form gets rebuilt along with the rest
+    // of the page. Baking the draft back in — and refocusing below if this
+    // field was the one being typed into — keeps that keystroke from vanishing.
+    const hadFocus = document.activeElement?.id === 'quick-capture'
+    const caret = hadFocus ? document.activeElement.selectionStart : null
+
     const capture = `
       <form class="quick-add">
         <input
@@ -213,6 +239,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
           autocomplete="off"
           maxlength="200"
           placeholder="Capture something…"
+          value="${escapeHtml(draft('quick-capture'))}"
         />
         <button type="button" class="icon-btn" data-act="new-note" aria-label="Write a full note" title="Write a full note">
           ${ICONS.note}
@@ -260,6 +287,14 @@ export function mountHome(root, { autoFocus = false } = {}) {
     dressNotes(root)
     const themeButton = root.querySelector('#theme-toggle')
     if (themeButton) paintThemeButton(themeButton)
+
+    if (hadFocus) {
+      const input = root.querySelector('#quick-capture')
+      if (input) {
+        input.focus()
+        input.setSelectionRange(caret, caret)
+      }
+    }
   }
 
   /** What the reminders button says — busy while a request is in flight,
@@ -427,15 +462,21 @@ export function mountHome(root, { autoFocus = false } = {}) {
    *  long notes that need a heading to stay scannable. */
   async function onCapture(rawText) {
     const text = rawText.trim()
-    if (!text || state.busy) return
+    if (!text || state.busy) {
+      if (!text) clearDraft('quick-capture')
+      return
+    }
 
     try {
       await createQuickNote(text)
       if (!alive) return
+      clearDraft('quick-capture')
       await load()
       focusCapture()
     } catch (error) {
       if (!alive) return
+      // Not thrown away — the field takes it back so the retry isn't a retype.
+      setDraft('quick-capture', text)
       state.status = 'error'
       state.error = error?.message || 'That did not go through.'
       render()
@@ -443,36 +484,29 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   async function openCard(card) {
-    const { changed } = await openNote(card ? { card } : { drawerId: null })
+    const { changed } = await openNote({ ...(card ? { card } : { drawerId: null }), onMove })
     if (changed && alive) await load()
   }
 
-  async function onDelete(id) {
-    const card = noteById(id)
-    if (!card) return
 
-    const ok = await openConfirm({
-      title: `Delete “${cardHeading(card, 60)}”?`,
-      message: 'It moves to the trash rather than vanishing outright.',
-      confirmLabel: 'Delete',
-      destructive: true,
-    })
-    if (ok) await mutate(() => trashCard(id))
-  }
-
-  async function onMove(id) {
+  /** Filing a quick note into a drawer, offered from inside the note. Dragging
+   *  it onto a project does the same thing roughly — that lands it in the
+   *  project's first drawer — and this is how to say which drawer. */
+  async function onMove(card) {
+    const from = card.drawer_id
     const picked = await openMovePicker({
       boards: state.boards,
       drawers: state.drawers,
-      currentDrawerId: null,
+      currentDrawerId: from,
     })
-    if (!picked) return
+    if (!picked || picked.drawerId === from) return false
 
-    if (!(await mutate(() => moveCardToDrawer(id, picked.drawerId)))) return
+    if (!(await mutate(() => moveCardToDrawer(card.id, picked.drawerId)))) return false
     offerUndo({
       message: 'Note filed',
-      undo: () => mutate(() => moveCardToDrawer(id, null)),
+      undo: () => mutate(() => moveCardToDrawer(card.id, from)),
     })
+    return true
   }
 
   async function onCopy(id, button) {
@@ -872,6 +906,10 @@ export function mountHome(root, { autoFocus = false } = {}) {
     onCapture(text)
   }
 
+  function onInput(event) {
+    if (event.target.id === 'quick-capture') setDraft('quick-capture', event.target.value)
+  }
+
   function onClick(event) {
     if (drag.justDragged() || boardDrag.justDragged()) return
 
@@ -900,22 +938,16 @@ export function mountHome(root, { autoFocus = false } = {}) {
       case 'open':
         openCard(noteById(id))
         break
-      case 'fold':
-        setCardFold(id, target.getAttribute('aria-expanded') !== 'true')
-        render()
-        break
       case 'copy':
         onCopy(id, target)
         break
-      case 'move':
-        onMove(id)
+      case 'notes-expand-all': {
+        const crowded = state.notes.length > CROWDED_AT
+        const allOpen = state.notes.every((card) => cardStartsOpen(card, { crowded }))
+        for (const card of state.notes) setCardFold(card.id, !allOpen)
+        render()
         break
-      case 'archive':
-        onArchive(id)
-        break
-      case 'delete':
-        onDelete(id)
-        break
+      }
       case 'menu':
         toggleMenu(target)
         break
@@ -975,6 +1007,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   root.addEventListener('submit', onSubmit)
+  root.addEventListener('input', onInput)
   document.addEventListener('click', onClick)
   document.addEventListener('keydown', onKeydown)
 
@@ -1003,6 +1036,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     stopWatchingInstall()
     stopWatchingReminders()
     root.removeEventListener('submit', onSubmit)
+    root.removeEventListener('input', onInput)
     document.removeEventListener('click', onClick)
     document.removeEventListener('keydown', onKeydown)
   }

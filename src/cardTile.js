@@ -2,8 +2,8 @@
 //
 // A drawer's kind decides the shape — a line with a tick box, a note tile, or
 // a picture — but all three are the same card underneath and share everything
-// below: the heading, the tags, the copy button, the menu, and the fold-out
-// that lets a note be read where it sits instead of being opened.
+// below: the heading, the tags, and the fold-out that lets a note be read where
+// it sits instead of being opened.
 //
 // The markup is deliberately plain strings: every view here re-renders by
 // replacing innerHTML, and a card that knows how to draw itself in one place is
@@ -11,6 +11,17 @@
 // go in as `data-note-image` and are filled in afterwards by
 // `hydrateNoteImages`, the same way as the ones inside a note — so no view has
 // to wait on a signed URL before it can draw.
+//
+// ## The face carries no buttons
+//
+// It used to carry three — copy, a chevron that folded the note out, and a dots
+// menu — held out of the text by an invisible float the width of all three. In
+// a drawer that is never wider than 26rem that float was a quarter of the first
+// line, on every device. So the chevron moved to the drawer's own header, where
+// folding was always a decision about the whole drawer rather than one card;
+// the menu went altogether, since tapping the card opens it and dragging it
+// files, archives or bins it; and copy is left, shown only where there's a
+// pointer to hover it with. The words run the full width of the card.
 //
 // ## A picture is shown once
 //
@@ -25,8 +36,6 @@ import { escapeHtml, dueInfo, relativeTime } from './format'
 import { plainText, firstImage, renderMarkdown } from './markdown'
 
 const ICONS = {
-  more: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.35" fill="currentColor" stroke="none"/></svg>`,
-  chevron: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg>`,
   tick: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
   copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15.5 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h.5"/></svg>`,
   image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 16.5l4.5-4 3.5 3 3-2.5 4.5 4"/></svg>`,
@@ -124,32 +133,11 @@ function tags(card) {
   return list.length ? `<span class="card-tags">${list.join('')}</span>` : ''
 }
 
-function menu(card) {
-  return `
-    <div class="menu">
-      <button
-        type="button"
-        class="icon-btn icon-btn-sm menu-trigger"
-        data-act="menu"
-        aria-haspopup="true"
-        aria-expanded="false"
-        aria-label="Card actions"
-        title="Card actions"
-      >${ICONS.more}</button>
-      <div class="menu-list" hidden>
-        <button type="button" data-act="open" data-id="${card.id}">Open</button>
-        <button type="button" data-act="move" data-id="${card.id}">Move to…</button>
-        <button type="button" data-act="archive" data-id="${card.id}">Archive</button>
-        <button type="button" class="menu-danger" data-act="delete" data-id="${card.id}">Delete</button>
-      </div>
-    </div>
-  `
-}
-
 /**
  * Render one card. `kind` is the drawer's shape ('list' | 'notes' | 'gallery')
  * and `expanded` says whether its note is folded out — a card with nothing
- * extra to show ignores it.
+ * extra to show ignores it. Folding is the drawer's decision now, so nothing
+ * here draws a control for it.
  */
 export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   // Parsing the note is the expensive part, and a board redraws on every tick,
@@ -159,8 +147,8 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   const picture = firstImage(card.body_markdown)
   const headingLimit = kind === 'list' ? LIST_HEADING_LIMIT : HEADING_LIMIT
 
-  // Only offer to unfold when there is something the face isn't already
-  // showing: a picture, formatting under a title, or more words than fit.
+  // Only fold out when there is something the face isn't already showing: a
+  // picture, formatting under a title, or more words than fit.
   const foldable =
     Boolean(card.body_markdown.trim()) &&
     (Boolean(title) || Boolean(picture) || bodyText.length > headingLimit)
@@ -168,22 +156,15 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   const open = expanded && foldable
   const heading = trim(title || bodyText, headingLimit) || 'Untitled'
 
-  // A titleless card already spends its note on the heading, and an open card
-  // is showing the whole thing underneath — either way, repeating it as an
-  // excerpt would just be the same words twice.
-  const excerpt = title && !open ? trim(bodyText, EXCERPT_LIMIT) : ''
+  // A titleless card spends its note on the heading. Once it's folded out the
+  // note is right there in full underneath, so printing the stub above it would
+  // be the same words twice — the excerpt has always been dropped for this
+  // reason, and the heading goes the same way.
+  const showHeading = Boolean(title) || !open
 
-  const fold = foldable
-    ? `<button
-         type="button"
-         class="card-btn card-fold"
-         data-act="fold"
-         data-id="${card.id}"
-         aria-expanded="${String(open)}"
-         aria-label="${open ? 'Collapse note' : 'Read note'}"
-         title="${open ? 'Collapse note' : 'Read note'}"
-       >${ICONS.chevron}</button>`
-    : ''
+  // …and an open card is showing the whole thing underneath, so an excerpt of
+  // it would be the same words twice as well.
+  const excerpt = title && !open ? trim(bodyText, EXCERPT_LIMIT) : ''
 
   const copy =
     title || bodyText
@@ -197,17 +178,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
          >${ICONS.copy}</button>`
       : ''
 
-  const actions = `<div class="card-actions">${copy}${fold}${menu(card)}</div>`
-
-  // How many buttons ended up in the corner, so the shim below can reserve
-  // exactly their width and no more — a card with nothing to copy or unfold
-  // shouldn't hold a gap open for buttons it hasn't got.
-  const actionCount = 1 + (copy ? 1 : 0) + (fold ? 1 : 0)
-
-  // An empty float the width of those buttons. The heading's first line breaks
-  // around it and everything below runs the full width of the card, instead of
-  // the whole note being squeezed into the column beside them.
-  const shim = `<span class="card-actions-shim" aria-hidden="true"></span>`
+  const actions = copy ? `<div class="card-actions">${copy}</div>` : ''
 
   const note = open
     ? `<div class="card-note markdown-body">
@@ -224,7 +195,8 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
     // A gallery is where a note without a picture has to hold its own, so the
     // words become the tile: bigger type, and more of them.
     const galleryHeading = face ? heading : trim(title || bodyText, TEXT_TILE_LIMIT) || 'Untitled'
-    const words = title || bodyText
+    const hasWords = Boolean(title || bodyText)
+    const words = hasWords && showHeading
     const tagged = tags(card)
 
     const caption =
@@ -238,8 +210,10 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
 
     // Neither words nor a picture: a blank stands in so the card is still
     // something you can see and pick up.
+    // Whether the words are *drawn* is beside the point here — a folded-out
+    // titleless card has handed them to the note below, and it is not blank.
     const blank =
-      picture || words ? '' : `<span class="gallery-blank" aria-hidden="true">${ICONS.image}</span>`
+      picture || hasWords ? '' : `<span class="gallery-blank" aria-hidden="true">${ICONS.image}</span>`
 
     return `
       <article
@@ -276,7 +250,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
             aria-label="${card.done ? 'Mark as not done' : 'Mark as done'}"
           >${ICONS.tick}</button>
           <button type="button" class="card-face" data-act="open" data-id="${card.id}">
-            <span class="card-title">${escapeHtml(heading)}</span>
+            ${showHeading ? `<span class="card-title">${escapeHtml(heading)}</span>` : ''}
             ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
           </button>
@@ -293,15 +267,13 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
       class="card card-note-tile${open ? ' is-open' : ''}"
       data-card="${card.id}"
       data-priority="${card.priority ?? ''}"
-      style="--actions: ${actionCount}"
       data-drag
     >
       <div class="card-line">
         <button type="button" class="card-face" data-act="open" data-id="${card.id}">
           <span class="card-face-text">
-            ${shim}
             ${open ? '' : faceImage(picture, 'card-thumb')}
-            <span class="card-title">${escapeHtml(heading)}</span>
+            ${showHeading ? `<span class="card-title">${escapeHtml(heading)}</span>` : ''}
             ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
           </span>
