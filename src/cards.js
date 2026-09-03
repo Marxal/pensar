@@ -176,10 +176,38 @@ export async function archiveCard(id) {
   if (error) throw error
 }
 
-/** Put an archived card back where it was. This is what Undo calls. */
+/** Put an archived card back where it was — what Undo calls, and what
+ *  Restore calls on the Archive page. A card whose drawer has been deleted
+ *  since comes back to Quick notes: `drawer_id` is `on delete set null`. */
 export async function unarchiveCard(id) {
   const { error } = await supabase.from('pensar_cards').update({ archived_at: null }).eq('id', id)
   if (error) throw error
+}
+
+/** Archived, non-trashed cards, most recently archived first, with the board
+ *  they were on (null when it was a quick note) — the Archive page says where
+ *  each one came from, the same way the Trash does. */
+export async function listArchivedCards() {
+  const { data, error } = await supabase
+    .from('pensar_cards')
+    .select(`${COLUMNS}, archived_at, board:pensar_boards(name)`)
+    .not('archived_at', 'is', null)
+    .is('deleted_at', null)
+    .order('archived_at', { ascending: false })
+
+  if (error) throw error
+  return data ?? []
+}
+
+export async function countArchivedCards() {
+  const { count, error } = await supabase
+    .from('pensar_cards')
+    .select('id', { count: 'exact', head: true })
+    .not('archived_at', 'is', null)
+    .is('deleted_at', null)
+
+  if (error) throw error
+  return count ?? 0
 }
 
 /**

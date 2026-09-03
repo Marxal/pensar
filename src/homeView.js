@@ -30,6 +30,7 @@ import {
   createQuickNote,
   archiveCard,
   unarchiveCard,
+  countArchivedCards,
   trashCard,
   restoreCard,
   moveCardToDrawer,
@@ -42,6 +43,7 @@ import { openLightbox } from './lightbox'
 import { renderCard, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
+import { createSwipeAway } from './swipe'
 import { slideInto } from './flip'
 import { signImages } from './images'
 import { addLinkPreviews } from './linkCard'
@@ -96,7 +98,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     boards: [],
     drawers: [],
     counts: new Map(), // board_id → live card count
-    archivedCount: 0,
+    archivedCount: 0, // projects and notes together — one Archive for both
     images: new Map(), // storage path → signed URL
     status: 'loading', // loading | ready | error
     error: '',
@@ -308,20 +310,18 @@ export function mountHome(root, { autoFocus = false } = {}) {
     return remindersEnabled() ? 'Reminders on' : 'Enable reminders'
   }
 
-  /** No top header any more (see main.js) — this is where Trash, the theme
-   *  toggle, install and logout live instead: a quiet row at the foot of
-   *  Home rather than a bar over every screen. */
+  /** No top header any more (see main.js) — this is where the Archive, the
+   *  Trash, the theme toggle, install and logout live instead: a quiet row at
+   *  the foot of Home rather than a bar over every screen. The Archive stands
+   *  there whether or not anything is in it: swiping a note aside has to put
+   *  it somewhere findable by someone who hasn't swiped one yet. */
   function utilityFoot() {
     return `
       <footer class="home-foot">
         <div class="home-foot-row">
-          ${
-            state.archivedCount > 0
-              ? `<button type="button" class="link-btn" data-act="show-archived">
-                   ${ICONS.archive} Archived projects (${state.archivedCount})
-                 </button>`
-              : ''
-          }
+          <button type="button" class="link-btn" data-act="show-archived">
+            ${ICONS.archive} Archive${state.archivedCount > 0 ? ` (${state.archivedCount})` : ''}
+          </button>
           <button type="button" class="link-btn" data-act="show-trash">${ICONS.trash} Trash</button>
         </div>
         <div class="home-foot-row">
@@ -366,12 +366,13 @@ export function mountHome(root, { autoFocus = false } = {}) {
     }
 
     try {
-      const [notes, boards, drawers, counts, archivedCount] = await Promise.all([
+      const [notes, boards, drawers, counts, archivedBoards, archivedCards] = await Promise.all([
         listQuickNotes(),
         listBoards(),
         listAllDrawers(),
         countCardsByBoard(),
         countArchivedBoards(),
+        countArchivedCards(),
       ])
       if (!alive) return
 
@@ -379,7 +380,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
       state.boards = boards
       state.drawers = drawers
       state.counts = counts
-      state.archivedCount = archivedCount
+      state.archivedCount = archivedBoards + archivedCards
       state.status = 'ready'
       paintBoardIcons()
     } catch (error) {
@@ -912,6 +913,25 @@ export function mountHome(root, { autoFocus = false } = {}) {
   })
 
   /* ---------------------------------------------------------------
+     Swiping a note away
+
+     The same archive the drop bar offers, without the trip to the top of the
+     screen — either direction, since a note has nothing else it could mean
+     sideways. See swipe.js for how it keeps out of the drag engine's way.
+     --------------------------------------------------------------- */
+
+  const swipe = createSwipeAway({
+    root,
+    selector: '.card[data-drag]',
+    blockSelector:
+      '.card-actions, .card-tick, a, input, textarea, select, [contenteditable], [data-no-drag]',
+    isBlocked: () => state.busy || drag.isDragging() || boardDrag.isDragging(),
+    icon: ICONS.archive,
+    label: 'Archive',
+    onSwipe: (element) => onArchive(element.dataset.card),
+  })
+
+  /* ---------------------------------------------------------------
      Wiring
      --------------------------------------------------------------- */
 
@@ -930,7 +950,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
   }
 
   function onClick(event) {
-    if (drag.justDragged() || boardDrag.justDragged()) return
+    if (drag.justDragged() || boardDrag.justDragged() || swipe.justSwiped()) return
 
     // A picture inside a folded-out note opens full size; one inside a link
     // card is the link's own, and follows it.
@@ -1052,6 +1072,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     dismissUndo()
     drag.destroy()
     boardDrag.destroy()
+    swipe.destroy()
     stopWatchingInstall()
     stopWatchingReminders()
     root.removeEventListener('submit', onSubmit)

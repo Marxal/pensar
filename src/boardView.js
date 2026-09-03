@@ -49,6 +49,7 @@ import { openLightbox } from './lightbox'
 import { renderCard, cardStartsOpen, dressNotes, CROWDED_AT } from './cardTile'
 import { boardColour, renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
+import { createSwipeAway } from './swipe'
 import { slideInto } from './flip'
 import { signImages, looksLikeImage, uploadNoteImage } from './images'
 import { addLinkPreviews } from './linkCard'
@@ -1374,6 +1375,26 @@ export function mountBoard(root, boardId) {
   }
 
   /* ---------------------------------------------------------------
+     Swiping a card away
+
+     The same archive the drop bar offers, with the whole gesture in the one
+     hand holding the phone. Either direction, since a card has nothing else
+     it could mean sideways — see swipe.js for how it stays out of the drag
+     engine's way.
+     --------------------------------------------------------------- */
+
+  const swipe = createSwipeAway({
+    root,
+    selector: '.card[data-drag]',
+    blockSelector:
+      '.card-actions, .card-tick, a, input, textarea, select, [contenteditable], [data-no-drag]',
+    isBlocked: () => state.busy || drag.isDragging() || drawerDrag.isDragging(),
+    icon: ICONS.archive,
+    label: 'Archive',
+    onSwipe: (element) => onArchive(element.dataset.card),
+  })
+
+  /* ---------------------------------------------------------------
      Pictures dropped in from outside
      --------------------------------------------------------------- */
 
@@ -1441,7 +1462,7 @@ export function mountBoard(root, boardId) {
 
   function onClick(event) {
     // A click fires at the end of a drag; that isn't a tap on the card.
-    if (drag.justDragged() || drawerDrag.justDragged()) return
+    if (drag.justDragged() || drawerDrag.justDragged() || swipe.justSwiped()) return
 
     // A picture inside a folded-out note opens full size; one inside a link
     // card is the link's own, and follows it.
@@ -1574,6 +1595,7 @@ export function mountBoard(root, boardId) {
     dismissUndo()
     drag.destroy()
     drawerDrag.destroy()
+    swipe.destroy()
     pictureInput.remove()
     delete document.body.dataset.tint
     root.removeEventListener('submit', onSubmit)

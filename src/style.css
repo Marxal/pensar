@@ -1606,6 +1606,69 @@ body.is-dragging-card {
   transform: scale(1.03);
 }
 
+/* ---------------------------------------------------------------
+   Swiping a card away
+   --------------------------------------------------------------- */
+
+/* The card rides over the space it leaves. Both it and the backdrop are
+   positioned, and the backdrop is put in front of it in the DOM, so the card
+   paints on top on tree order alone — no z-index race with whatever else is
+   on the page. The transition is off while the finger has it: a card that
+   eases towards where the thumb was is a card that feels stuck. */
+.card.is-swiping {
+  z-index: 1;
+  transition: none;
+  box-shadow: var(--shadow-lg);
+}
+
+/* Sized and placed from the card's own box (see swipe.js), not dropped into
+   the layout: quick notes and a gallery are both masonry, and an extra child
+   in flow would reflow the column under the finger. */
+.swipe-back {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.9rem;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+/* Far enough that letting go would do it. */
+.swipe-back.is-armed {
+  background: var(--accent);
+  color: var(--paper);
+}
+
+/* The same action sits at both ends — either direction archives — and fades
+   up with how far the card has travelled. */
+.swipe-back-action {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  opacity: var(--swipe-progress, 0);
+}
+
+/* Only the end the card has actually uncovered says anything. */
+.swipe-back[data-dir='left'] .swipe-back-action:first-child,
+.swipe-back[data-dir='right'] .swipe-back-action:last-child {
+  opacity: 0;
+}
+
+.swipe-back svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* The bar that appears along the top while something is in the air — clear of
    any bottom nav, so a drop target is never crammed in beside it. */
 .drop-bar {
