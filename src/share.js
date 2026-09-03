@@ -17,6 +17,7 @@
 
 import { createCard, createQuickNote } from './cards'
 import { uploadNoteImage } from './images'
+import { linkifyMarkdown } from './linkify'
 
 const PENDING_KEY = 'pensar:pending-share'
 
@@ -115,20 +116,23 @@ async function takeFile(cache, key) {
 }
 
 /**
- * Write whatever is waiting into Quick notes, and report how many notes that
- * came to. Safe to call on every home load — with nothing waiting it does
- * nothing and costs nothing.
+ * Write whatever is waiting into Quick notes, and hand back the notes it came
+ * to — the caller looks their links up (see linkCard.js), which is the whole
+ * point of a share that is a link. Safe to call on every home load: with
+ * nothing waiting it does nothing and costs nothing.
  *
  * Throws if a note couldn't be written, leaving whatever hasn't been saved yet
  * for the next attempt.
  */
 export async function takeSharedNotes() {
   const payload = stashed()
-  if (!payload) return 0
+  if (!payload) return []
 
   const cache = await shareCache()
-  const words = wordsOf(payload)
-  let made = 0
+  // A share sheet hands over a bare URL; the note stores markdown, so it is
+  // linked here rather than left as a row of characters.
+  const words = linkifyMarkdown(wordsOf(payload))
+  const made = []
 
   // Each picture is dropped from the payload the moment its note exists, so a
   // failure halfway through doesn't write the earlier ones a second time.
@@ -139,9 +143,8 @@ export async function takeSharedNotes() {
       const path = await uploadNoteImage(file)
       // The words go on the first picture rather than into a note of their
       // own — a photo shared with a caption is one thing, not two.
-      const caption = made === 0 && words ? `${words}\n\n` : ''
-      await createCard(null, { body_markdown: `${caption}![](pensar-image/${path})` })
-      made += 1
+      const caption = made.length === 0 && words ? `${words}\n\n` : ''
+      made.push(await createCard(null, { body_markdown: `${caption}![](pensar-image/${path})` }))
     }
 
     payload.files = payload.files.filter((other) => other !== key)
@@ -149,10 +152,7 @@ export async function takeSharedNotes() {
     await cache?.delete(key)
   }
 
-  if (words && made === 0) {
-    await createQuickNote(words)
-    made += 1
-  }
+  if (words && made.length === 0) made.push(await createQuickNote(words))
 
   forget()
   return made

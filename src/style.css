@@ -2116,33 +2116,239 @@ body.has-overlay .project-bar {
   cursor: zoom-in;
 }
 
+/* Link cards ----------------------------------------------------
+
+   A looked-up link: the page's picture beside its own title, the words under
+   it and the site it's on (see src/linkCard.js for what is stored). The same
+   children are drawn three ways, and the class on the root picks which —
+   nothing for two columns inside a note, `is-tile` for a gallery, `is-row` for
+   a line on a tick list. On the front of a card the root is a span rather than
+   an anchor, because the face is already a button; everything below applies to
+   both. */
+
 .note-link-card {
   position: relative;
-  display: block;
-  width: min(20rem, 100%);
-  margin: 0.5em 0 0.8em;
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  align-items: stretch;
+  width: min(26rem, 100%);
+  margin: 0.6em 0 0.8em;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+  text-decoration: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.note-link-card img {
+a.note-link-card:hover {
+  border-color: var(--rule-strong);
+  box-shadow: var(--shadow-md);
+}
+
+/* On the front of a card -----------------------------------------
+   Tighter than in a note, and clear of the thumbnail the words float
+   around in a note tile. */
+.card-face .note-link-card {
+  clear: both;
+  margin: 0.45rem 0 0.05rem;
+}
+
+/* The picture side. `.markdown-body img` gives every picture in a note a
+   border, a radius and room to breathe; inside a card it is one half of the
+   card and wants none of that. */
+.note-link-card .link-card-image,
+.note-link-card .link-card-blank {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 5rem;
+  max-height: none;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  object-fit: cover;
+  background: var(--paper-sunken);
+  cursor: inherit;
+}
+
+/* No picture at all, and not even an icon: the site's initial on paper. It
+   still says which site this is, which an empty frame would not. */
+.note-link-card .link-card-blank {
+  display: grid;
+  place-items: center;
+  font-family: var(--font-heading);
+  font-size: 1.7rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink-faint);
+  background: linear-gradient(
+    155deg,
+    var(--paper-sunken),
+    color-mix(in srgb, var(--accent) 14%, var(--paper-sunken))
+  );
+}
+
+/* A site icon stood in for a missing picture — a small square logo, so it is
+   shown whole on a tint rather than cropped to fill the frame. */
+.note-link-card[data-icon] .link-card-image {
+  padding: 1.1rem;
+  object-fit: contain;
+}
+
+.link-card-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+}
+
+.link-card-title {
+  display: -webkit-box;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.link-card-desc {
+  display: -webkit-box;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ink-muted);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.link-card-site {
+  margin-top: 0.1rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* On a tick list -------------------------------------------------
+   A to-do is a line, so the picture shrinks to the height of one and the
+   card tucks in under the words rather than towering over them. */
+.note-link-card.is-row {
+  /* The list's face is a flex row that wraps: a full basis puts the card on a
+     line of its own under the item it belongs to. */
+  flex: 1 0 100%;
+  grid-template-columns: 2.7rem minmax(0, 1fr);
+  width: 100%;
+  margin: 0.1rem 0 0;
+  border-radius: var(--radius-sm);
+  background: var(--paper-sunken);
+  box-shadow: none;
+}
+
+.note-link-card.is-row .link-card-image,
+.note-link-card.is-row .link-card-blank {
+  min-height: 2.7rem;
+}
+
+.note-link-card.is-row .link-card-blank {
+  font-size: 1rem;
+}
+
+.note-link-card.is-row[data-icon] .link-card-image {
+  padding: 0.35rem;
+}
+
+.note-link-card.is-row .link-card-text {
+  gap: 0;
+  padding: 0.28rem 0.5rem;
+}
+
+.note-link-card.is-row .link-card-title {
+  font-size: 0.78rem;
+  font-weight: 500;
+  -webkit-line-clamp: 1;
+}
+
+.note-link-card.is-row .link-card-desc {
+  font-size: 0.72rem;
+  -webkit-line-clamp: 1;
+}
+
+.note-link-card.is-row .link-card-site {
+  margin-top: 0;
+  font-size: 0.66rem;
+}
+
+/* On a gallery ---------------------------------------------------
+   A wall of photographs is no place for two columns: the picture takes the
+   width and the words sit under it, so a link reads as one more thing to
+   look at. The tile is the whole face, so the card around it draws the
+   border and the corners. */
+.note-link-card.is-tile {
   display: block;
   width: 100%;
   margin: 0;
-  aspect-ratio: 1.9 / 1;
-  object-fit: cover;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
 }
+
+.note-link-card.is-tile .link-card-image,
+.note-link-card.is-tile .link-card-blank {
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 1.7 / 1;
+}
+
+.note-link-card.is-tile .link-card-blank {
+  font-size: 2.1rem;
+}
+
+.note-link-card.is-tile[data-icon] .link-card-image {
+  padding: 1.6rem;
+}
+
+.note-link-card.is-tile .link-card-text {
+  padding: 0.5rem 0.6rem 0.6rem;
+}
+
+.note-link-card.is-tile .link-card-title {
+  font-family: var(--font-heading);
+  font-size: 0.9rem;
+  line-height: 1.3;
+  -webkit-line-clamp: 3;
+}
+
+.note-link-card.is-tile .link-card-desc {
+  -webkit-line-clamp: 3;
+}
+
+/* While it is being written -------------------------------------- */
 
 .note-link-card-remove {
   position: absolute;
-  top: -0.4rem;
-  right: -0.4rem;
+  top: 0.3rem;
+  right: 0.3rem;
   width: 1.4rem;
   height: 1.4rem;
   border: 1px solid var(--rule-strong);
   border-radius: 50%;
-  background: var(--paper-raised);
+  background: color-mix(in srgb, var(--paper-raised) 88%, transparent);
+  backdrop-filter: blur(4px);
   color: var(--ink-muted);
   font-size: 0.9rem;
   line-height: 1;

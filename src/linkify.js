@@ -56,6 +56,42 @@ function matchUrl(rawToken) {
   return { href: `https://${text}`, text }
 }
 
+/**
+ * Read a whole line the same way, without a DOM in the middle of it.
+ *
+ * Quick capture and a share from the phone arrive as plain text that is stored
+ * as markdown, so the linking has to happen in the string: every token that
+ * would have become an anchor in the note editor becomes `[text](href)`
+ * instead. Anything already inside markdown link syntax is left alone.
+ */
+export function linkifyMarkdown(text) {
+  return String(text ?? '').replace(/[^\s\u00a0]+/g, (token) => {
+    if (token.startsWith('[') || token.startsWith('(') || token.startsWith('!')) return token
+    const found = matchUrl(token)
+    if (!found) return token
+    return `[${found.text}](${found.href})${token.slice(found.text.length)}`
+  })
+}
+
+/** Every link in a piece of text or markdown, in the order it appears and
+ *  without repeats — what a card's previews are looked up from. */
+export function urlsIn(text) {
+  const found = new Set()
+
+  // Markdown's own links first: `[words](href)` hides the URL from the token
+  // scan below, and it is the shape `linkifyMarkdown` leaves behind.
+  for (const match of String(text ?? '').matchAll(/\]\(([^)\s]+)\)/g)) {
+    if (/^https?:\/\//i.test(match[1])) found.add(match[1])
+  }
+
+  for (const match of String(text ?? '').matchAll(/[^\s\u00a0]+/g)) {
+    const link = matchUrl(match[0])
+    if (link?.href.startsWith('http')) found.add(link.href)
+  }
+
+  return [...found]
+}
+
 function anchorFor({ href, text }) {
   const anchor = document.createElement('a')
   anchor.href = href

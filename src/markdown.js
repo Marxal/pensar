@@ -21,10 +21,22 @@ import DOMPurify from 'dompurify'
 import TurndownService from 'turndown'
 
 import { signImages, cachedImage } from './images'
+import { LINK_CARD_CLASS, isLinkCard, linkCardMarkup, readLinkCard } from './linkCard'
 
 marked.setOptions({ breaks: true })
 
 const turndown = new TurndownService({ bulletListMarker: '-', emDelimiter: '*' })
+
+// A link card is stored as the HTML it is drawn as — markdown has nowhere to
+// put a title, a description and a site name (see linkCard.js). It is written
+// back from its own *data* rather than from the live element, so the editor's
+// remove button, its `contenteditable="false"` and anything else the editor
+// hung on it never reach the database. A blank line either side keeps it a
+// block of its own rather than a run-on paragraph.
+turndown.addRule('linkCard', {
+  filter: (node) => node.nodeName === 'A' && isLinkCard(node),
+  replacement: (_content, node) => `\n\n${linkCardMarkup(readLinkCard(node))}\n\n`,
+})
 
 /** Marks an <img> src as a path in our bucket rather than a URL to fetch.
  *  Deliberately not a custom `scheme:` — a relative-looking path survives
@@ -104,24 +116,43 @@ export function markdownFromEditor(editor) {
 }
 
 /** Plain text for card headings and excerpts — markdown syntax stripped
- *  rather than shown raw. */
+ *  rather than shown raw.
+ *
+ *  A link card's words are the *page's*, not the note's: they are drawn by the
+ *  card itself wherever it appears, so counting them here would put a
+ *  stranger's headline on the front of your own note. They come out. */
 export function plainText(markdown) {
-  return (parse(renderMarkdown(markdown)).content.textContent ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const template = parse(renderMarkdown(markdown))
+  for (const card of template.content.querySelectorAll(`.${LINK_CARD_CLASS}`)) card.remove()
+  return (template.content.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
 /**
  * The note's first picture, for a card's thumbnail: `{ path }` for one of ours
  * (needs signing) or `{ url }` for an external one, and null when the note has
  * no pictures at all.
+ *
+ * A link card's picture doesn't count — it belongs to the card, which the face
+ * draws whole (see `firstLinkCard`), and lifting it out would show it twice.
  */
 export function firstImage(markdown) {
-  const img = parse(renderMarkdown(markdown)).content.querySelector('img')
+  const template = parse(renderMarkdown(markdown))
+  for (const card of template.content.querySelectorAll(`.${LINK_CARD_CLASS}`)) card.remove()
+
+  const img = template.content.querySelector('img')
   if (!img) return null
   if (img.dataset.noteImage) return { path: img.dataset.noteImage }
   const url = img.getAttribute('src')
   return url ? { url } : null
+}
+
+/** The note's first link card, for a card's face: the same `{ url, title,
+ *  description, site, image }` the note itself is drawn from, or null. */
+export function firstLinkCard(markdown) {
+  for (const anchor of parse(renderMarkdown(markdown)).content.querySelectorAll('a')) {
+    if (isLinkCard(anchor)) return readLinkCard(anchor)
+  }
+  return null
 }
 
 /** True when a note has nothing in it — no text, no pictures. */

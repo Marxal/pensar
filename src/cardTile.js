@@ -33,7 +33,14 @@
 import { PRIORITY_LABELS } from './cards'
 import { cardFold } from './openCards'
 import { escapeHtml, dueInfo, relativeTime } from './format'
-import { plainText, firstImage, renderMarkdown } from './markdown'
+import {
+  LINK_CARD_CLASS,
+  dressLinkCard,
+  dressLinkCards,
+  linkCardLabel,
+  linkCardMarkup,
+} from './linkCard'
+import { plainText, firstImage, firstLinkCard, renderMarkdown } from './markdown'
 
 const ICONS = {
   tick: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>`,
@@ -64,14 +71,34 @@ const LONG_NOTE_CHARS = 500
  *  themselves away too, however short they are. */
 export const CROWDED_AT = 8
 
+/** A link card is stored as the markup it is drawn as (see linkCard.js), which
+ *  runs several times longer than what you see. Measuring a note with the
+ *  markup still in it would make every link look like a long one, so it comes
+ *  out of the count first. */
+const LINK_CARD_HTML = /<a class="note-link-card[^>]*>[\s\S]*?<\/a>/g
+
 function trim(text, limit) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
-/** A title stands in for the heading; a titleless card leans on its note. */
+/**
+ * A note whose only words are the link its card already stands for. Typing a
+ * URL leaves the URL behind as text *and* puts a card under it, so the card
+ * would otherwise be introduced by the very thing it is a picture of.
+ */
+function saysOnlyTheLink(text, url) {
+  if (!text || !url) return false
+  const bare = (value) => value.replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase()
+  return bare(text) === bare(url)
+}
+
+/** A title stands in for the heading; a titleless card leans on its note —
+ *  and a note that is nothing but a link is named by the page it points at. */
 export function cardHeading(card, limit = HEADING_LIMIT) {
-  const text = card.title.trim() || plainText(card.body_markdown)
-  return trim(text, limit) || 'Untitled'
+  const link = firstLinkCard(card.body_markdown)
+  const body = plainText(card.body_markdown)
+  const words = link && saysOnlyTheLink(body, link.url) ? '' : body
+  return trim(card.title.trim() || words || (link ? linkCardLabel(link) : ''), limit) || 'Untitled'
 }
 
 /**
@@ -92,7 +119,7 @@ export function cardStartsOpen(card, { kind = 'notes', crowded = false } = {}) {
 
   if (kind !== 'notes') return false
 
-  const body = card.body_markdown ?? ''
+  const body = (card.body_markdown ?? '').replace(LINK_CARD_HTML, '')
   if (!body.trim() || body.length > LONG_NOTE_CHARS) return false
   if ((body.match(/!\[/g) ?? []).length > 1) return false
 
@@ -112,6 +139,14 @@ function faceImage(picture, className) {
   // instead of the card's — draggable="false" leaves the gesture to drag.js.
   return `<img class="${className}" ${source} alt="" loading="lazy" draggable="false">`
 }
+
+/**
+ * How a link card is drawn on the front of each kind of card. A tick list gets
+ * the small one — a to-do is a line, and a full-width picture above it would
+ * bury the line it belongs to — a gallery gets the picture over the words, and
+ * a note gets the two-column card, picture beside the words.
+ */
+const LINK_FACE = { list: 'is-row', gallery: 'is-tile', notes: '' }
 
 function tags(card) {
   const list = []
@@ -145,22 +180,37 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
   const title = card.title.trim()
   const bodyText = plainText(card.body_markdown)
   const picture = firstImage(card.body_markdown)
+  const link = firstLinkCard(card.body_markdown)
   const headingLimit = kind === 'list' ? LIST_HEADING_LIMIT : HEADING_LIMIT
 
   // Only fold out when there is something the face isn't already showing: a
-  // picture, formatting under a title, or more words than fit.
+  // picture, a link card, formatting under a title, or more words than fit.
   const foldable =
     Boolean(card.body_markdown.trim()) &&
-    (Boolean(title) || Boolean(picture) || bodyText.length > headingLimit)
+    (Boolean(title) || Boolean(picture) || Boolean(link) || bodyText.length > headingLimit)
 
   const open = expanded && foldable
   const heading = trim(title || bodyText, headingLimit) || 'Untitled'
+  const hasWords = Boolean(title || bodyText)
+
+  // …though a note that is only a link has no words of its *own*: what it says
+  // is the URL, which the card underneath already stands for.
+  const wordsOfItsOwn = hasWords && !(link && !title && saysOnlyTheLink(bodyText, link.url))
 
   // A titleless card spends its note on the heading. Once it's folded out the
   // note is right there in full underneath, so printing the stub above it would
   // be the same words twice — the excerpt has always been dropped for this
   // reason, and the heading goes the same way.
-  const showHeading = Boolean(title) || !open
+  //
+  // A note that is nothing but a link goes the same way for the same reason:
+  // the card carries the page's own title, and a raw URL over the top of it —
+  // or "Untitled" — would say less than nothing.
+  const showHeading = (Boolean(title) || !open) && (wordsOfItsOwn || !link)
+
+  // Folded out, the note draws the link card itself — so the face steps aside
+  // rather than showing it twice, the same as a picture.
+  const linkFace =
+    link && !open ? linkCardMarkup(link, { tag: 'span', variant: LINK_FACE[kind] ?? '' }) : ''
 
   // …and an open card is showing the whole thing underneath, so an excerpt of
   // it would be the same words twice as well.
@@ -192,11 +242,15 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
     // face steps aside rather than showing it twice.
     const face = picture && !open ? faceImage(picture, 'gallery-image') : ''
 
+    // A link with no picture of its own in the note becomes the tile: the
+    // page's picture over its title, its description and its site, which is
+    // the only thing on a wall of photographs a bare URL could never be.
+    const tile = face ? '' : linkFace
+
     // A gallery is where a note without a picture has to hold its own, so the
     // words become the tile: bigger type, and more of them.
     const galleryHeading = face ? heading : trim(title || bodyText, TEXT_TILE_LIMIT) || 'Untitled'
-    const hasWords = Boolean(title || bodyText)
-    const words = hasWords && showHeading
+    const words = wordsOfItsOwn && showHeading
     const tagged = tags(card)
 
     const caption =
@@ -213,17 +267,19 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
     // Whether the words are *drawn* is beside the point here — a folded-out
     // titleless card has handed them to the note below, and it is not blank.
     const blank =
-      picture || hasWords ? '' : `<span class="gallery-blank" aria-hidden="true">${ICONS.image}</span>`
+      picture || link || hasWords
+        ? ''
+        : `<span class="gallery-blank" aria-hidden="true">${ICONS.image}</span>`
 
     return `
       <article
-        class="card card-gallery${picture ? '' : ' is-text'}${open ? ' is-open' : ''}"
+        class="card card-gallery${picture || tile ? '' : ' is-text'}${open ? ' is-open' : ''}"
         data-card="${card.id}"
         data-priority="${card.priority ?? ''}"
         data-drag
       >
         <button type="button" class="card-face" data-act="open" data-id="${card.id}">
-          ${face}${blank}${caption}
+          ${face}${tile}${blank}${caption}
         </button>
         ${note}
         ${actions}
@@ -253,6 +309,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
             ${showHeading ? `<span class="card-title">${escapeHtml(heading)}</span>` : ''}
             ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
+            ${linkFace}
           </button>
           ${open ? '' : faceImage(picture, 'card-thumb card-thumb-sm')}
           ${actions}
@@ -276,6 +333,7 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
             ${showHeading ? `<span class="card-title">${escapeHtml(heading)}</span>` : ''}
             ${excerpt ? `<span class="card-excerpt">${escapeHtml(excerpt)}</span>` : ''}
             ${tags(card)}
+            ${linkFace}
           </span>
         </button>
         ${actions}
@@ -286,20 +344,20 @@ export function renderCard(card, { kind = 'notes', expanded = false } = {}) {
 }
 
 /**
- * Finish off the notes folded out under the cards in `root`: links open away
- * from the app rather than replacing it. Run after every render, alongside
- * `hydrateNoteImages`.
+ * Finish off the cards in `root`: links inside a note open away from the app
+ * rather than replacing it, and every link card — in a note or on a face —
+ * gets brought up to shape and given a placeholder to fall back on. Run after
+ * every render, alongside `hydrateNoteImages`.
  */
 export function dressNotes(root) {
   for (const anchor of root.querySelectorAll('.card-note a[href]')) {
     anchor.target = '_blank'
     anchor.rel = 'noopener noreferrer'
-
-    // A link whose whole content is a picture is a preview card (see
-    // noteEditor.js's decorateLinkCard) — give it the same compact, bordered
-    // look here so a saved note reads the same as it did while being written.
-    if (anchor.children.length === 1 && anchor.firstElementChild.tagName === 'IMG') {
-      anchor.classList.add('note-link-card')
-    }
   }
+
+  // Only inside a note: an anchor holding nothing but a picture is how a
+  // preview was stored before it had any words, and that guess has no business
+  // being made about the rest of the page.
+  for (const note of root.querySelectorAll('.card-note')) dressLinkCards(note)
+  for (const face of root.querySelectorAll(`.card-face .${LINK_CARD_CLASS}`)) dressLinkCard(face)
 }

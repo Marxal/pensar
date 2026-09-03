@@ -22,6 +22,14 @@ import { pushBackHandler } from './backstack'
 import { dueInfo, relativeTime } from './format'
 import { openLightbox } from './lightbox'
 import { linkifyAtCaret, linkifyTree } from './linkify'
+import {
+  LINK_CARD_CLASS,
+  dressLinkCard,
+  dressLinkCards,
+  linkCardData,
+  linkCardMarkup,
+  worthShowing,
+} from './linkCard'
 import { fetchLinkPreview } from './linkPreview'
 import { hydrateNoteImages, markdownFromEditor, renderMarkdown, isBlankNote } from './markdown'
 import { looksLikeImage, uploadNoteImage } from './images'
@@ -47,33 +55,41 @@ const ICONS = {
    --------------------------------------------------------------- */
 
 /**
- * Turn a preview anchor — one whose whole content is a picture — into a small
- * card with a remove button, so a fresh preview and one hydrated back out of
- * saved markdown look and behave the same. Safe to call twice.
+ * Give a link card the one thing it only needs while it is being edited: a way
+ * out. It is `contenteditable="false"` so the caret runs past it rather than
+ * into it, and the × in its corner takes the whole card away — the button is
+ * marked as editor chrome, so it never reaches the saved markdown. Safe to
+ * call twice.
  */
 function decorateLinkCard(anchor) {
-  if (anchor.classList.contains('note-link-card')) return
-  anchor.classList.add('note-link-card')
   anchor.contentEditable = 'false'
-  anchor.target = '_blank'
-  anchor.rel = 'noopener noreferrer'
+  dressLinkCard(anchor)
+  if (anchor.querySelector('.note-link-card-remove')) return
 
   const remove = document.createElement('button')
   remove.type = 'button'
   remove.className = 'note-link-card-remove'
   remove.dataset.editorChrome = ''
-  remove.setAttribute('aria-label', 'Remove preview image')
-  remove.title = 'Remove preview image'
+  remove.setAttribute('aria-label', 'Remove link preview')
+  remove.title = 'Remove link preview'
   remove.textContent = '×'
   anchor.appendChild(remove)
 }
 
+/** Every link card in the note, brought up to shape and given its ×. A
+ *  preview saved before there was anything to say about it — a bare picture
+ *  inside a link — gains its title and site name here (see linkCard.js). */
 function decorateAllLinkCards(root) {
-  for (const anchor of root.querySelectorAll('a')) {
-    if (anchor.children.length === 1 && anchor.firstElementChild.tagName === 'IMG') {
-      decorateLinkCard(anchor)
-    }
-  }
+  dressLinkCards(root)
+  for (const anchor of root.querySelectorAll(`a.${LINK_CARD_CLASS}`)) decorateLinkCard(anchor)
+}
+
+/** Is this link already carded? A link can be read twice — typed, then read
+ *  again on blur — and one card each time would be one card too many. */
+function hasCardFor(body, url) {
+  return [...body.querySelectorAll(`a.${LINK_CARD_CLASS}`)].some(
+    (card) => card.getAttribute('href') === url
+  )
 }
 
 /** Insert `node` after whatever block `anchor` lives in, so a preview lands
@@ -86,20 +102,23 @@ function insertAfterBlock(body, anchor, node) {
 }
 
 /**
- * Fetch a link's Open Graph picture and drop it under the line it's on, as its
- * own small card. Silent no-op if the page has no picture, the fetch fails, or
- * the note has been closed by the time it comes back.
+ * Look a link up and drop what comes back under the line it's on, as a card of
+ * its own: the page's picture beside its title, its description and its site.
+ * Silent no-op if the page had nothing to say, the fetch failed, or the note
+ * has been closed by the time it comes back.
  */
 async function attachLinkPreview(body, anchor, url) {
-  const preview = await fetchLinkPreview(url)
-  if (!preview?.image || !body.isConnected || !body.contains(anchor)) return
+  if (hasCardFor(body, url)) return
 
-  const card = document.createElement('a')
-  card.href = url
-  const img = document.createElement('img')
-  img.src = preview.image
-  img.alt = preview.title || ''
-  card.appendChild(img)
+  const preview = await fetchLinkPreview(url)
+  if (!worthShowing(preview)) return
+  if (!body.isConnected || !body.contains(anchor) || hasCardFor(body, url)) return
+
+  // Built from markup rather than element by element: the same string is what
+  // gets stored, so what is on screen and what is saved can't drift apart.
+  const holder = document.createElement('div')
+  holder.innerHTML = linkCardMarkup(linkCardData({ ...preview, url }))
+  const card = holder.firstElementChild
   decorateLinkCard(card)
 
   insertAfterBlock(body, anchor, card)
@@ -505,10 +524,19 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
        Editing
        ------------------------------------------------------------- */
 
+    /** Look a link up and, when a card comes back, count the note as changed —
+     *  a preview that lands after the last keystroke would otherwise sit there
+     *  unsaved until something else was typed. */
+    function previewLink(anchor, url = anchor.href) {
+      attachLinkPreview(bodyEl, anchor, url).then((card) => {
+        if (card) markDirty()
+      })
+    }
+
     titleEl.addEventListener('input', markDirty)
     bodyEl.addEventListener('input', () => {
       const anchor = linkifyAtCaret(bodyEl, { trailing: true })
-      if (anchor) attachLinkPreview(bodyEl, anchor, anchor.href)
+      if (anchor) previewLink(anchor)
       markDirty()
     })
 
@@ -522,7 +550,7 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
     bodyEl.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return
       const anchor = linkifyAtCaret(bodyEl)
-      if (anchor) attachLinkPreview(bodyEl, anchor, anchor.href)
+      if (anchor) previewLink(anchor)
     })
 
     // The note is a page, so the empty space below the words is still the
@@ -537,7 +565,7 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
     bodyEl.addEventListener('blur', () => {
       const anchor = linkifyAtCaret(bodyEl)
       if (anchor) {
-        attachLinkPreview(bodyEl, anchor, anchor.href)
+        previewLink(anchor)
         markDirty()
       }
     })
@@ -565,9 +593,7 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
 
         document.execCommand('insertText', false, text)
         keepingCaret(() => {
-          for (const anchor of linkifyTree(bodyEl)) {
-            attachLinkPreview(bodyEl, anchor, anchor.href)
-          }
+          for (const anchor of linkifyTree(bodyEl)) previewLink(anchor)
         })
         markDirty()
       })
@@ -622,6 +648,20 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
     // taken back out — that keeps buttons off the pictures themselves.
     bodyEl.addEventListener('click', (event) => {
       if (event.target.closest('[data-editor-chrome]')) return
+
+      // A link card is a link before it is a picture: tapping one goes to the
+      // page. The caret can't land inside it — it's contenteditable="false" —
+      // so nothing else wants this click, and the × in its corner is the way
+      // back out. A picture of our own keeps the lightbox, which is where it
+      // can be taken out of the note.
+      const linkCard = event.target.closest(`a.${LINK_CARD_CLASS}`)
+      if (linkCard) {
+        event.preventDefault()
+        const href = linkCard.getAttribute('href')
+        if (href) window.open(href, '_blank', 'noopener,noreferrer')
+        return
+      }
+
       const image = event.target.closest('img')
       if (!image) return
 
@@ -633,7 +673,7 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
         src: source,
         alt: image.alt,
         onRemove: () => {
-          ;(image.closest('a.note-link-card') ?? image).remove()
+          image.remove()
           markDirty()
         },
       })
@@ -706,7 +746,7 @@ export function openNote({ card = null, drawerId = null, kind = null, onMove = n
           if (!selection?.rangeCount || !bodyEl.contains(selection.anchorNode)) caretToEnd(bodyEl)
           document.execCommand('createLink', false, url)
           const anchor = [...bodyEl.querySelectorAll('a')].find((a) => a.href === url)
-          if (anchor) attachLinkPreview(bodyEl, anchor, url)
+          if (anchor) previewLink(anchor, url)
           markDirty()
           break
         }

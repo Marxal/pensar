@@ -3,6 +3,12 @@
  * Open Graph tags, so the note editor can show the image tied to a link
  * without the browser trying (and CORS-failing) to fetch the page itself.
  *
+ * What comes back is `{ url, title, description, site, image, icon }`, all
+ * nullable: enough for a link card to draw a picture beside the page's own
+ * title and the words under it (see src/linkCard.js). `icon` is the site's own
+ * icon and is only looked for when the page has no picture of its own — a
+ * fallback that still says which site this is.
+ *
  * Deploying it: `supabase functions deploy pensar-link-preview --no-verify-jwt`
  * from a real terminal (same constraint as `db push` — Claude Code's
  * sandboxed shell can't reach the CLI's login session).
@@ -98,6 +104,24 @@ function pageTitle(html: string): string | null {
   return match ? decodeEntities(match[1]).trim() : null
 }
 
+/**
+ * The first `<link rel="…">` href matching one of `rels`, in the order asked
+ * for. `rel` is a space-separated list ("shortcut icon"), so it is matched a
+ * word at a time rather than whole.
+ */
+function linkHref(html: string, rels: string[]): string | null {
+  const tags = html.match(/<link\b[^>]*>/gi) ?? []
+  for (const rel of rels) {
+    for (const tag of tags) {
+      const value = tag.match(/\brel=["']([^"']*)["']/i)?.[1]?.toLowerCase() ?? ''
+      if (!value.split(/\s+/).includes(rel)) continue
+      const href = tag.match(/\bhref=["']([^"']*)["']/i)?.[1]
+      if (href) return decodeEntities(href).trim()
+    }
+  }
+  return null
+}
+
 /** Reads up to `limit` bytes of a response body as text — og tags live in <head>, no need for the rest. */
 async function readCapped(response: Response, limit: number): Promise<string> {
   const reader = response.body?.getReader()
@@ -115,6 +139,11 @@ async function readCapped(response: Response, limit: number): Promise<string> {
   }
   await reader.cancel().catch(() => {})
   return text
+}
+
+/** Nothing to say about this page — the link stays a plain link. */
+function empty(url: string) {
+  return { url, title: null, description: null, site: null, image: null, icon: null }
 }
 
 async function handlePreview(request: Request): Promise<Response> {
@@ -155,24 +184,37 @@ async function handlePreview(request: Request): Promise<Response> {
       },
     })
 
-    if (!response.ok) return json({ url: rawUrl, title: null, description: null, image: null })
+    if (!response.ok) return json(empty(rawUrl))
 
     const html = await readCapped(response, 300_000)
-
-    const title = metaContent(html, ['og:title', 'twitter:title']) ?? pageTitle(html)
-    const description = metaContent(html, ['og:description', 'twitter:description', 'description'])
-    let image = metaContent(html, ['og:image', 'og:image:url', 'twitter:image'])
-    if (image) {
+    const absolute = (value: string | null): string | null => {
+      if (!value) return null
       try {
-        image = new URL(image, response.url).href
+        return new URL(value, response.url).href
       } catch {
-        image = null
+        return null
       }
     }
 
-    return json({ url: rawUrl, title, description, image })
+    const title = metaContent(html, ['og:title', 'twitter:title']) ?? pageTitle(html)
+    const description = metaContent(html, ['og:description', 'twitter:description', 'description'])
+    const site = metaContent(html, ['og:site_name', 'application-name'])
+    const image = absolute(metaContent(html, ['og:image', 'og:image:url', 'twitter:image']))
+
+    // Plenty of pages carry no picture of their own. Their icon is the next
+    // best thing — it still says which site this is, which a blank frame does
+    // not — so it comes back separately and is drawn contained rather than
+    // cropped (see linkCard.js).
+    const icon = image
+      ? null
+      : absolute(
+          linkHref(html, ['apple-touch-icon', 'apple-touch-icon-precomposed', 'icon', 'mask-icon']) ??
+            metaContent(html, ['msapplication-TileImage'])
+        )
+
+    return json({ url: rawUrl, title, description, site, image, icon })
   } catch {
-    return json({ url: rawUrl, title: null, description: null, image: null })
+    return json(empty(rawUrl))
   } finally {
     clearTimeout(timeout)
   }

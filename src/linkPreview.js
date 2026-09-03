@@ -1,13 +1,15 @@
-// Asks the pensar-link-preview Edge Function for a URL's Open Graph image,
-// so the note editor can show it without the browser CORS-failing a direct
-// fetch of someone else's page.
+// Asks the pensar-link-preview Edge Function what a URL leads to, so a link
+// card can be built from the page's own words and picture without the browser
+// CORS-failing a direct fetch of someone else's page.
 
 import { supabase } from './supabaseClient'
 
 /**
- * Resolves with `{ url, title, description, image }` (fields null when
- * unavailable), or null if the function call itself failed. Never throws —
- * a missing preview just means the link stays a plain link.
+ * Resolves with `{ url, title, description, site, image, icon }` — every field
+ * null when the page didn't offer it — or null if the call itself failed.
+ * `icon` is the site's own icon, sent only when the page has no picture, and
+ * `linkCard.js` is what decides how to draw either. Never throws: a missing
+ * preview just means the link stays a plain link.
  */
 export async function fetchLinkPreview(url) {
   try {

@@ -44,6 +44,8 @@ import { renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { slideInto } from './flip'
 import { signImages } from './images'
+import { addLinkPreviews } from './linkCard'
+import { linkifyMarkdown } from './linkify'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
 import { draft, setDraft, clearDraft } from './drafts'
@@ -357,7 +359,7 @@ export function mountHome(root, { autoFocus = false } = {}) {
     // be written before the list below is read or it wouldn't be in it.
     state.notice = ''
     try {
-      await takeSharedNotes()
+      lookUpLinks(...(await takeSharedNotes()))
     } catch (error) {
       // The share is kept for the next try rather than dropped on the floor.
       state.notice = error?.message || 'What you shared could not be saved yet.'
@@ -458,6 +460,20 @@ export function mountHome(root, { autoFocus = false } = {}) {
     return state.boards.find((board) => board.id === id)
   }
 
+  /**
+   * Look a captured note's links up and redraw once they land.
+   *
+   * Deliberately not awaited: capture is meant to feel instant, so the note
+   * appears the moment it is typed and grows its link cards a second later.
+   */
+  function lookUpLinks(...cards) {
+    for (const card of cards) {
+      addLinkPreviews(card).then((updated) => {
+        if (updated && alive) load()
+      })
+    }
+  }
+
   /** A captured line is the note itself, not a title for one. Titles are for
    *  long notes that need a heading to stay scannable. */
   async function onCapture(rawText) {
@@ -468,11 +484,14 @@ export function mountHome(root, { autoFocus = false } = {}) {
     }
 
     try {
-      await createQuickNote(text)
+      // Typed in passing, a link is still a link: the same reading the note
+      // editor does as you type, done here in the string.
+      const made = await createQuickNote(linkifyMarkdown(text))
       if (!alive) return
       clearDraft('quick-capture')
       await load()
       focusCapture()
+      lookUpLinks(made)
     } catch (error) {
       if (!alive) return
       // Not thrown away — the field takes it back so the retry isn't a retype.

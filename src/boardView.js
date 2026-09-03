@@ -51,6 +51,8 @@ import { boardColour, renderBoardGlyph } from './boardStyle'
 import { createDragEngine } from './drag'
 import { slideInto } from './flip'
 import { signImages, looksLikeImage, uploadNoteImage } from './images'
+import { addLinkPreviews } from './linkCard'
+import { linkifyMarkdown } from './linkify'
 import { hydrateNoteImages, plainText } from './markdown'
 import { setCardFold } from './openCards'
 import {
@@ -643,11 +645,16 @@ export function mountBoard(root, boardId) {
       return
     }
     try {
-      await createCard(drawerId, { body_markdown: text.trim() })
+      // Typed in passing, a link is still a link — and worth looking up, which
+      // happens after the item is on the list so adding one stays instant.
+      const made = await createCard(drawerId, { body_markdown: linkifyMarkdown(text.trim()) })
       if (!alive) return
       clearDraft(`add-item:${drawerId}`)
       await load()
       root.querySelector(`[data-add-form][data-drawer="${drawerId}"] input`)?.focus()
+      addLinkPreviews(made).then((updated) => {
+        if (updated && alive) load()
+      })
     } catch (error) {
       if (!alive) return
       // Not thrown away — the field takes it back so the retry isn't a retype.
