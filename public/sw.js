@@ -94,7 +94,7 @@ self.addEventListener('push', (event) => {
     self.registration.showNotification(title, {
       body,
       icon: './icons/icon-192.png',
-      badge: './icons/icon-192.png',
+      badge: './icons/icon-badge-96.png',
       // Replaces an earlier notification for the same card rather than
       // stacking a second one under it.
       tag: message.tag || 'pensar-reminder',
