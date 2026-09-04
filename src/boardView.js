@@ -18,7 +18,15 @@
 // Anything that moves something without asking first leaves an undo offer
 // behind it (undo.js) rather than a confirmation in front of it.
 
-import { getBoard, listBoards, renameBoard, setBoardStyle, archiveBoard, trashBoard } from './boards'
+import {
+  getBoard,
+  listBoards,
+  renameBoard,
+  setBoardStyle,
+  setBoardSwipeDrawers,
+  archiveBoard,
+  trashBoard,
+} from './boards'
 import {
   listAllDrawers,
   createDrawer,
@@ -81,6 +89,9 @@ const ICONS = {
   // the screen, and on a desktop the two buttons now sit side by side.
   unfold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 10.5 12 6.5l4 4M8 13.5l4 4 4-4"/></svg>`,
   fold: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6.5 12 10.5l4-4M8 17.5l4-4 4 4"/></svg>`,
+  // Two drawers with an outward arrow apiece — swipe between them on a phone
+  // rather than stack them.
+  swipe: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="7" height="13" rx="1.3"/><rect x="13.5" y="5.5" width="7" height="13" rx="1.3"/><path d="M9.7 9.5 7.2 12l2.5 2.5M14.3 9.5l2.5 2.5-2.5 2.5"/></svg>`,
 }
 
 /** One small glyph per drawer shape, for the buttons that switch it. */
@@ -360,7 +371,17 @@ export function mountBoard(root, boardId) {
           ${
             state.focus
               ? `<button type="button" class="btn btn-ghost btn-sm" data-act="drawer-unfocus">${ICONS.collapse} All drawers</button>`
-              : `<button type="button" class="btn btn-ghost btn-sm" data-act="drawer-new">${ICONS.plus} Drawer</button>`
+              : `
+                <button
+                  type="button"
+                  class="icon-btn"
+                  data-act="drawer-swipe-toggle"
+                  aria-pressed="${String(Boolean(state.board?.swipe_drawers))}"
+                  aria-label="${state.board?.swipe_drawers ? 'Stack drawers on a phone' : 'Swipe between drawers on a phone'}"
+                  title="${state.board?.swipe_drawers ? 'Stack drawers on a phone' : 'Swipe between drawers on a phone'}"
+                >${ICONS.swipe}</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-act="drawer-new">${ICONS.plus} Drawer</button>
+              `
           }
           <div class="menu">
             <button
@@ -492,7 +513,7 @@ export function mountBoard(root, boardId) {
         : state.drawers
 
       body = `
-        <div class="drawers${state.focus ? ' is-focused' : ''}" data-lane>
+        <div class="drawers${state.focus ? ' is-focused' : ''}${state.board?.swipe_drawers ? ' is-swipe' : ''}" data-lane>
           ${shown.map((drawer) => drawerSection(drawer)).join('')}
         </div>
       `
@@ -790,6 +811,13 @@ export function mountBoard(root, boardId) {
   async function onNewDrawer() {
     const fields = await openDrawerDialog()
     if (fields) await mutate(() => createDrawer(boardId, fields))
+  }
+
+  /** No dialog, same as a drawer's own shape icons — a tap flips it, since
+   *  there's nothing here to confirm. */
+  async function onToggleSwipeDrawers() {
+    if (!state.board) return
+    await mutate(() => setBoardSwipeDrawers(boardId, !state.board.swipe_drawers))
   }
 
   /** What the stylesheet draws a gallery at before anyone has zoomed it — the
@@ -1283,7 +1311,7 @@ export function mountBoard(root, boardId) {
     const moving = handle.closest('.drawer')
     if (!lane || !moving) return
 
-    const stacked = window.matchMedia('(max-width: 48rem)').matches
+    const stacked = window.matchMedia('(max-width: 48rem)').matches && !state.board?.swipe_drawers
     const others = [...lane.querySelectorAll(':scope > .drawer')].filter((el) => el !== moving)
 
     const before = others.find((el) => {
@@ -1504,6 +1532,9 @@ export function mountBoard(root, boardId) {
         break
       case 'drawer-new':
         onNewDrawer()
+        break
+      case 'drawer-swipe-toggle':
+        onToggleSwipeDrawers()
         break
       case 'drawer-kind':
         onSetDrawerKind(drawer, target.dataset.kind)

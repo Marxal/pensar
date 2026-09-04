@@ -5,7 +5,8 @@
 import { supabase } from './supabaseClient'
 import { createDrawer, FIRST_DRAWER } from './drawers'
 
-const COLUMNS = 'id, name, colour, emoji, icon_path, position, archived_at, deleted_at, created_at'
+const COLUMNS =
+  'id, name, colour, emoji, icon_path, swipe_drawers, position, archived_at, deleted_at, created_at'
 
 /** Active boards, in display order. */
 export async function listBoards() {
@@ -142,6 +143,21 @@ export async function setBoardStyle(id, style) {
   const { data, error } = await supabase
     .from('pensar_boards')
     .update(boardStylePatch(style))
+    .eq('id', id)
+    .select(COLUMNS)
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+/** Whether a phone swipes between this board's drawers instead of stacking
+ *  them — a property of the project, kept beside colour and emoji rather than
+ *  in localStorage, since it's a decision about the board, not the screen. */
+export async function setBoardSwipeDrawers(id, swipeDrawers) {
+  const { data, error } = await supabase
+    .from('pensar_boards')
+    .update({ swipe_drawers: swipeDrawers })
     .eq('id', id)
     .select(COLUMNS)
     .single()

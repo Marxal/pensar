@@ -532,6 +532,12 @@ button {
   flex-shrink: 0;
 }
 
+/* Swiping between drawers on a phone, on for this board. */
+.page-head-actions .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .page-title {
   font-size: 1.75rem;
   overflow-wrap: anywhere;
@@ -3082,12 +3088,27 @@ a.note-link-card:hover {
    Narrow screens
    --------------------------------------------------------------- */
 
-/* Drawers side by side need real width; below that they stack. */
+/* Drawers side by side need real width; below that they stack — unless the
+   board has opted into swiping between them instead (the icon beside
+   "+ Drawer"), in which case they stay a horizontal row, one drawer to a
+   screen, and scroll-snap is the whole gesture: no JS swipe of our own. */
 @media (max-width: 48rem) {
   .drawers {
     grid-auto-flow: row;
     grid-auto-columns: auto;
     overflow-x: visible;
+  }
+
+  .drawers.is-swipe {
+    grid-auto-flow: column;
+    grid-auto-columns: 100%;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .drawers.is-swipe > .drawer {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
   }
 }
 
